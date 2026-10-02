@@ -407,6 +407,72 @@ pub extern "C" fn core_frame_bytes_for(payload_bytes: u32) -> u32 {
     lfs::frame_bytes_for(payload_bytes as usize) as u32
 }
 
+/// Which attack `core_attack` applies. The harness names them; nothing else does.
+pub const ATTACK_GAIN_DB: u32 = 1;
+pub const ATTACK_DITHER: u32 = 2;
+pub const ATTACK_WHITE_NOISE: u32 = 3;
+pub const ATTACK_PINK_NOISE: u32 = 4;
+pub const ATTACK_LOWPASS: u32 = 5;
+pub const ATTACK_HIGHPASS: u32 = 6;
+pub const ATTACK_RESAMPLE: u32 = 7;
+pub const ATTACK_TIME_SHIFT: u32 = 8;
+pub const ATTACK_CROP_FRACTION: u32 = 9;
+
+/// Apply one attack to an audio buffer, in place.
+///
+/// One export rather than ten, because the harness is the only caller and a table of ids in one
+/// place is easier to keep honest than a dozen signatures. `param` means something different per
+/// attack: decibels for `ATTACK_GAIN_DB`, a signal-to-noise ratio in dB for the noise and dither
+/// ones, hertz for the filters, a ratio for `ATTACK_RESAMPLE`, a sample count for
+/// `ATTACK_TIME_SHIFT`, and a fraction of the length to drop from the front for
+/// `ATTACK_CROP_FRACTION`.
+///
+/// `sample_rate` is passed rather than taken from `tables`, because the harness may run at any
+/// rate and the filters and the resampler are meaningless without the right one.
+///
+/// `param2` supplies the pseudo-random seed for the ones that need one, as two 32-bit halves.
+#[no_mangle]
+pub unsafe extern "C" fn core_attack(
+    audio: *mut f32,
+    attack: u32,
+    param: f64,
+    sample_rate: f64,
+    seed_lo: u32,
+    seed_hi: u32,
+) -> i32 {
+    let Some(header) = header_of(audio) else {
+        return CORE_ERR_MAGIC;
+    };
+    if header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+    let input = std::slice::from_raw_parts(audio, header.len as usize).to_vec();
+    let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+
+    let output = match attack {
+        ATTACK_GAIN_DB => attack::gain(&input, param as f32),
+        ATTACK_DITHER => attack::dither(&input, param as f32, seed),
+        ATTACK_WHITE_NOISE => attack::white_noise(&input, param as f32, seed),
+        ATTACK_PINK_NOISE => attack::pink_noise(&input, param as f32, seed),
+        ATTACK_LOWPASS => attack::lowpass(&input, param as f32, sample_rate as f32),
+        ATTACK_HIGHPASS => attack::highpass(&input, param as f32, sample_rate as f32),
+        ATTACK_RESAMPLE => attack::resample(&input, param as f32, sample_rate as f32),
+        ATTACK_TIME_SHIFT => attack::time_shift(&input, param as usize),
+        ATTACK_CROP_FRACTION => {
+            let drop = ((input.len() as f64) * param) as usize;
+            attack::crop(&input, drop, input.len())
+        }
+        _ => return CORE_ERR_RANGE,
+    };
+
+    if output.len() > header.cap as usize {
+        return CORE_ERR_LENGTH;
+    }
+    std::ptr::copy_nonoverlapping(output.as_ptr(), audio, output.len());
+    header.len = output.len() as u32;
+    CORE_OK
+}
+
 /// Goertzel power at `freq` over a buffer's tracked length, through an out-parameter.
 ///
 /// The length is not a parameter: it is whatever `core_buffer_write` last recorded.

@@ -21,6 +21,9 @@ export const ERRORS = new Map([
 /** The ABI this wrapper was written against. The core is checked against it on creation. */
 export const ABI_VERSION_EXPECTED = 1;
 
+/** Samples of scratch the attack entry point needs; 65536 covers a second at 44.1 kHz. */
+const ATTACK_SCRATCH = 65536;
+
 /**
  * Turn a negative core return into a thrown Error naming the operation and the reason.
  *
@@ -319,6 +322,29 @@ export function createCore(instance) {
     }
   }
 
+  /**
+   * Apply one attack to a buffer, in place.
+   *
+   * `id` is one of the `ATTACKS` values in `src/attacks.js`, `param` means what that table says
+   * it means, and `sampleRate` is passed rather than assumed because the filters and the resampler
+   * are meaningless without the right one.
+   */
+  /** Apply an attack to a plain Float32Array, returning a new one. */
+  function attack(id, param, sampleRate, audio, seed = 0) {
+    if (!(audio instanceof Float32Array)) {
+      throw new TypeError('attack needs a Float32Array');
+    }
+    const buffer = createBuffer(Math.max(1, audio.length));
+    try {
+      fillSamples(buffer, audio);
+      check(e.core_attack(buffer.ptr, id, param, sampleRate, seed & 0xffffffff,
+        Math.floor(seed / 0x100000000) >>> 0), 'core_attack');
+      return readBuffer(buffer);
+    } finally {
+      destroyBuffer(buffer);
+    }
+  }
+
   function destroy() {
     if (scratch !== 0) {
       e.core_scratch_free(scratch);
@@ -340,6 +366,7 @@ export function createCore(instance) {
     decodeBytes,
     embedLsb,
     extractLsb,
+    attack,
     destroy,
   };
 }
