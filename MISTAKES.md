@@ -129,6 +129,27 @@ Prevention: the raw boundary is for C++ and for the wrapper, and host code never
 directly. A call site that has to remember an argument order is a call site that will get it
 wrong.
 
+## The container served the Wasm module as a web page, and nothing said so
+
+**The first deployment check caught this, which is the only reason it is a paragraph and not an
+outage.** `root` in the nginx configuration was `/srv/www`, and the module lives at
+`/srv/build/fluidmark_core.wasm` because it is shared with the Node tools rather than being part
+of the site. So `/build/fluidmark_core.wasm` resolved to `/srv/www/build/fluidmark_core.wasm`,
+which does not exist, and nginx served the 404 page — as `text/html`, with a 200 in some setups
+and a 404 in this one. The browser was handed an HTML page where it expected a module.
+
+`/src/` was broken the same way. Both needed an explicit `alias`.
+
+This is worth writing down because every layer reported success: the build copied the file, the
+container started, `/healthz` answered `ok`, and the index page loaded. Only `curl -I` on the
+module's own URL showed the content type was `text/html`.
+
+Prevention: after anything is deployed, request the thing that is most likely to be served with
+the wrong type, by its own URL, and look at the status and the content type. A health endpoint
+proves the process is up; it says nothing about what is being served. The content type of a Wasm
+module is the check, because `application/wasm` or the browser silently falls back to compiling the
+whole module as an `ArrayBuffer` — slower, and not an error.
+
 ## A screenshot path is a build step
 
 A screenshot that nobody looks at until something looks wrong is a step that was broken for as long as nobody checked. In
@@ -241,3 +262,51 @@ Found by reading `reference/WebBeep`, not by running it. Four places where the r
 Prevention: when porting, write each one down in `docs/port.md` with the test that would notice it changing. The point is
 not that the reference is wrong. It is that these are load-bearing coincidences, and a reader who does not know they were
 deliberate will change one and lose a week to why decoding stopped working.
+## A rejection sampler that is correct and quadratic
+
+**Found by the LSB baseline hanging the test suite, and it would have been a denial of service in
+a tool rather than a slow test.** Choosing distinct sample positions by drawing and rejecting any
+draw at or below the highest already drawn is Knuth's method, and it is correct. It is also
+quadratic when you want a small fraction of a large range: pushing the highest toward the limit
+means rejection probabilities climb, so drawing 336 positions out of 44100 hit the limit after about
+nine and then rejected almost everything forever.
+
+It is fine when drawing most of the array, which is why it survives review and why my first two
+tests, which used 64 positions out of 64 and 2000 out of 10000, both passed. The case that matters
+is the realistic one: a short payload in a track's worth of samples.
+
+Replaced with a sparse Fisher-Yates, which costs O(count) and stores only the swaps. The test
+that now covers it is `a_small_fraction_of_a_large_range_comes_out_promptly`, and the note above
+the type says why, because the next person to see a rejection sampler here will think it is fine.
+
+Prevention: when the quantity is a fraction of a large range, ask what the method costs when the
+fraction is small, and write a test at that ratio rather than at the one that is easy.
+
+## "The low bit of a float" is not a thing, and the test that would have said so was the one I skipped
+
+**The LSB baseline embedded into a sample's fractional part and read it back, and every bit came
+back as 1.** A float's low bit lives in its mantissa, and a decoder reading `round(fraction * 2)`
+sees nothing of it: the value written as `0.0` or `1.0` fractional is a full-scale difference, not
+a bit.
+
+The fix is to work in the 16-bit integer a WAV actually stores, which is where the survey's "low
+order sample bits" live. The lesson is narrower than "be careful with floats": the failure was
+caught by a round-trip test, and the round-trip test I did not write was the one that mattered. The
+pair "embed, then read back your own bytes" is the cheapest test for a whole class of scheme bug,
+and it is the first thing to write.
+
+Prevention: for any embedding, the first test is a round trip on unmodified audio, asserted on the
+bytes rather than on the payload. A scheme that cannot read back its own bytes has no chance
+against anything else.
+
+## A scheme that needs the reader to know the payload length cannot be read by a tool
+
+The LSB baseline has no sync word: the reader is told how many bytes to read through
+`extract(..., payloadBytes)`. That is workable for a harness and impossible for a user, who has a
+file and no idea what length to ask for. It is in `watermark.js` as an explicit `TypeError` rather
+than a default, so the limitation is visible at the call site instead of producing a plausible
+short answer.
+
+Prevention: a scheme's first question is how a reader finds where the mark starts, and that is a
+requirement on the scheme rather than a detail of the caller. Asking it while writing the framing
+is cheaper than discovering it after the whole scheme is built.

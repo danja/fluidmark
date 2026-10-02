@@ -24,6 +24,9 @@ export const ABI_VERSION_EXPECTED = 1;
 /** Samples of scratch the attack entry point needs; 65536 covers a second at 44.1 kHz. */
 const ATTACK_SCRATCH = 65536;
 
+/** Slack in an attack buffer, for attacks that lengthen the signal. */
+const ATTACK_HEADROOM = 8192;
+
 /**
  * Turn a negative core return into a thrown Error naming the operation and the reason.
  *
@@ -329,12 +332,20 @@ export function createCore(instance) {
    * it means, and `sampleRate` is passed rather than assumed because the filters and the resampler
    * are meaningless without the right one.
    */
-  /** Apply an attack to a plain Float32Array, returning a new one. */
+  /**
+   * Apply an attack to a plain Float32Array, returning a new one.
+   *
+   * The buffer is allocated with headroom, because some attacks make the signal longer: a time
+   * shift adds silence and an upsampling resample nearly doubles it. Sizing it to the input
+   * instead makes those two fail with a length error that names the buffer rather than the
+   * attack.
+   */
   function attack(id, param, sampleRate, audio, seed = 0) {
     if (!(audio instanceof Float32Array)) {
       throw new TypeError('attack needs a Float32Array');
     }
-    const buffer = createBuffer(Math.max(1, audio.length));
+    const capacity = audio.length * 2 + ATTACK_HEADROOM;
+    const buffer = createBuffer(Math.max(1, capacity));
     try {
       fillSamples(buffer, audio);
       check(e.core_attack(buffer.ptr, id, param, sampleRate, seed & 0xffffffff,

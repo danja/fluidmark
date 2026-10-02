@@ -13,9 +13,11 @@ One Rust crate, two artifacts, one set of `extern "C"` functions:
 
 ```
 wasm/     the core: DSP behind a C ABI, built as libfluidmark_core.a and .wasm
-src/      the JavaScript wrapper: typed arrays instead of pointers, real errors
+src/      the JavaScript: the wrapper, the framing, the WAV codec, the attack list
 bin/      Node tools
+www/      the browser front end
 tests/    Vitest, mirroring src/
+deploy/   nginx configuration
 ```
 
 `npm test` builds the core, runs the Rust tests, runs a C++ link check against the static
@@ -25,7 +27,21 @@ library, then the Vitest suite. `docs/ffi.md` is the boundary contract.
 npm run build
 node bin/mark.js --in track.wav --payload "http://example.org/" --out marked.wav
 node bin/mark.js --in marked.wav --read
+node bin/attack.js --in track.wav --payload "http://example.org/"   # the robustness harness
 ```
+
+The site is a container: nginx serving static files, with the Wasm module built in an earlier
+stage, so the running image has no Node and no Rust in it.
+
+```sh
+docker build -t fluidmark .
+docker run --rm -p 8080:8080 fluidmark
+```
+
+Two schemes, deliberately kept apart. `mark.js` is the audible tone codec from Delivery 1. The
+watermark path is inaudible and is measured by `attack.js`, which runs a mark through the whole
+attack list and reports a bit error rate for each. The baseline it measures, keyed least-significant-bit
+embedding, survives none of them, which is the point: it is the control the real scheme has to beat.
 
 The first pass works, and it is checked against the reference implementation's own output rather
 than against itself: it reads `reference/WebBeep/data/beeps.wav` back as `abc`, and five of the

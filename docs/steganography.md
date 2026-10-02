@@ -126,3 +126,68 @@ is a prototype, not a result.
 
 Step 1 before step 2 is the whole argument. The WebBeep port is a working stand-in for step 1
 if its parameter search is reused, which is in `INBOX.md`.
+
+## The harness, and what the LSB baseline does through it
+
+Built 2026-10-02, before the scheme it measures. `node bin/attack.js --in track.wav --payload "text"`
+runs the whole list and prints a table; `--json` gives the same figures as JSON. The list lives in
+`src/attacks.js` and the transforms in `wasm/src/attack.rs`.
+
+Measured on a 4-second 44.1 kHz mono test track, one bit per sample at keyed positions, a 32-byte
+frame of 256 bits.
+
+| Attack | BER | Payload readable |
+|---|---|---|
+| `none (control)` | 0.0% | yes |
+| `gain -6 dB` | 47.7% | no |
+| `gain -0.5 dB` | 48.0% | no |
+| `gain +3 dB` | 43.8% | no |
+| `dither 48 dB SNR` | 50.4% | no |
+| `dither 36 dB SNR` | 53.5% | no |
+| `white noise 30 dB SNR` | 45.7% | no |
+| `white noise 20 dB SNR` | 44.9% | no |
+| `pink noise 30 dB SNR` | 48.0% | no |
+| `pink noise 20 dB SNR` | 47.7% | no |
+| `low-pass 5 kHz` | 53.9% | no |
+| `low-pass 1 kHz` | 50.8% | no |
+| `high-pass 200 Hz` | 50.8% | no |
+| `high-pass 2 kHz` | 54.7% | no |
+| `resample to 48 kHz` | 50.0% | no |
+| `resample to 22.05 kHz` | 45.3% | no |
+| `time shift 1000 samples` | 53.1% | no |
+| `crop first 5%` | 50.8% | no |
+| `mp3 128k` | 43.8% | no |
+| `mp3 64k` | 46.5% | no |
+
+Every figure is a bit error rate against **the frame that went in**, not against whatever decoded, so
+a frame that fails its checksum still has a rate and that rate is the measurement. The lossy rows
+need ffmpeg and are reported separately whether or not it is installed.
+
+**This is the calibration, and it is the expected result.** Near-50% BER is random: the mark is
+gone. Not one attack in the brief's list leaves the payload readable, including a gain change of half
+a decibel, which is what the survey predicts for sample-bit schemes and what an earlier version of
+this work got wrong by assuming that a small gain is "representable in 16 bits".
+
+Two tests guard it, in `tests/attacks.test.js`, and both matter:
+
+- The LSB baseline is destroyed by every attack in the list. If that stops being true, the harness
+  is broken rather than the scheme having improved.
+- The control row reads back perfectly. Without it, a harness that destroyed everything would look
+  exactly as convincing.
+
+A false-positive measurement sits alongside them: 20 noise buffers, zero reported as carrying a
+mark. For this scheme that is structural rather than lucky, because the frame opens with four
+specific bytes at a known offset. It is also a property LSB has by accident rather than by design,
+and a scheme with a correlator will not get it for free.
+
+### What this means for the scheme that replaces it
+
+The list is a specification, and the bar is visible in the table above: a real scheme has to put a
+number in a column where this one has 50%. Spread spectrum in a transform domain is the candidate,
+and `TODO.md` has the pieces: a keyed spreading sequence, a sync word so the decoder can find the
+start at all, a length field, forward error correction, and interleaving.
+
+The two rows worth watching are `resample to 48 kHz` and `mp3 64k`. Resampling is where a
+sample-domain mark dies first and where a frequency-domain one is supposed to live, and lossy
+transcoding is the interference that matters most for music. If a replacement scheme does not beat
+50% on those two, it is not worth building further.

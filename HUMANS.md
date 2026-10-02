@@ -35,6 +35,24 @@ since accessibility and narrow layout are both only checkable in a real browser.
 before falling back to a workaround: the tool may simply need starting, and a silent workaround can end up standing in
 for a check that never ran.
 
+**A narrow layout check is now automated** — `www/browser-check.js` measures `scrollWidth` against
+`innerWidth` at 360px in headless Chrome, checks every visible target is at least 44px, and checks
+text inputs compute to 16px. What it cannot do is judge the result, so the parts below are still
+owed.
+
+**Real key presses, not scripted focus.** `browser-check.js` focuses each control in turn to prove
+it is focusable at all, which is not the same as the tab order being right. Press Tab through both
+forms with real hands: the skip link first, then the header links, then the identifier field, the
+scheme menu, the file input, the button, then the second form.
+
+**A narrow layout check, in a real browser, once the front end is built.** Load the page at phone
+width and compare `documentElement.scrollWidth` with `innerWidth`; they should match, or match
+within a pixel. This cannot be done from a DOM without a renderer, and the tests cannot see it: the
+page has no layout until something lays it out. `clientWidth` includes padding, so it is the wrong
+number to compare against, and an element outside the document measures zero. What to check
+individually: every target at least 44px, the text input at least 16px, and no horizontal scrolling
+at 360px.
+
 **A real screen reader pass over the two forms**, when the front end is built. Both operations are a text field and a file
 input plus a result, so the check is short and specific: is the field labelled, is the chosen file announced with its name,
 is the result announced when it arrives, and is an error distinguishable from an empty result by ear alone.

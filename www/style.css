@@ -1,0 +1,296 @@
+/* www/style.css
+ *
+ * One column, because one column is what a phone can do. Sizes are in rem and percentages so
+ * the layout scales with the reader's font size, which is what a browser zoom is for.
+ *
+ * The touch target minimum of 44px and the 16px input text are both there for a reason in the
+ * interface rules: 44px is the smallest reliably tappable size, and iOS zooms the page in when a
+ * smaller font takes focus, which then leaves the page scrolled sideways.
+ */
+
+:root {
+  --ink: #16181d;
+  --muted: #5b6270;
+  --line: #d3d7de;
+  --paper: #ffffff;
+  --wash: #f4f6f9;
+  --accent: #1c5fd6;
+  --accent-ink: #ffffff;
+  --warn-bg: #fdf3e3;
+  --warn-line: #b8801f;
+  --ok-bg: #e8f4ec;
+  --ok-line: #1f7a3d;
+  --radius: 8px;
+  --gap: 1rem;
+  --target: 44px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8eaee;
+    --muted: #a7aeba;
+    --line: #3a4049;
+    --paper: #14161a;
+    --wash: #1c1f25;
+    --accent: #7aa7ff;
+    --accent-ink: #10131a;
+    --warn-bg: #3a2f18;
+    --warn-line: #e0ac54;
+    --ok-bg: #16301f;
+    --ok-line: #63c98a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* 16px at the root so every rem below is at least legible, and so iOS does not zoom. */
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+  z-index: 10;
+  padding: 0.5rem 0.75rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: var(--radius);
+}
+
+header,
+main,
+footer {
+  /* A max width on the block, not on a flex child: a fixed width on a child does not shrink,
+     which is how a keyboard ends up wider than the phone it is on. */
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 var(--gap);
+}
+
+header {
+  padding-top: 2rem;
+  padding-bottom: 1rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1.3rem;
+  margin: 2rem 0 0.5rem;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 1rem 0 0.25rem;
+}
+
+.tagline {
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+}
+
+nav a {
+  color: var(--accent);
+}
+
+a {
+  color: var(--accent);
+}
+
+/* A visible focus indicator against the panel background, on everything focusable. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+section {
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+}
+
+.field {
+  margin: 1rem 0;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+input[type="text"],
+select {
+  width: 100%;
+  min-height: var(--target);
+  padding: 0.5rem 0.6rem;
+  /* 16px minimum on any text input, or iOS zooms the page in on focus. */
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+input[type="file"] {
+  display: block;
+  width: 100%;
+  min-height: var(--target);
+  padding: 0.4rem 0;
+  font-size: 1rem;
+}
+
+input[type="file"]::file-selector-button {
+  min-height: var(--target);
+  padding: 0 0.9rem;
+  margin-right: 0.6rem;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.help {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+.file-info {
+  /* The chosen file's name and size, which some browsers announce for the input and some do
+     not. In text as well, so it is never only in a control's accessible name. */
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1rem 0;
+}
+
+button {
+  min-height: var(--target);
+  min-width: var(--target);
+  padding: 0 1rem;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+button.primary {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* Disabled is not used for "you cannot do this yet". A disabled control looks exactly like an
+   enabled one under a screen reader and under the pointer, so nothing about interacting with it
+   says whether it does anything. Controls are removed from the flow instead, and the reason is
+   written into the status line. */
+button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.result {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.payload {
+  margin: 0;
+  font-size: 1.1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* An IRI is long. Wrapping rather than overflowing is the whole reason for this. */
+  overflow-wrap: anywhere;
+  background: var(--ok-bg);
+  border-left: 4px solid var(--ok-line);
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+}
+
+.notice {
+  margin: 0;
+  background: var(--warn-bg);
+  border-left: 4px solid var(--warn-line);
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+}
+
+.download {
+  display: inline-block;
+  min-height: var(--target);
+  /* Vertically centred against the button-sized row it sits in. */
+  line-height: var(--target);
+  font-weight: 600;
+}
+
+.status {
+  min-height: 1.5rem;
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+footer {
+  margin-top: 3rem;
+  padding-bottom: 3rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+[hidden] {
+  /* The `hidden` attribute must win, since `display: flex` and friends otherwise do. */
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

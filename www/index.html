@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Without this a phone zooms in on focus and the page scrolls sideways. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluidMark: watermarking for music</title>
+    <meta
+      name="description"
+      content="Mark a music file with an identifier, and read that identifier back out of the marked file."
+    />
+    <!-- Relative, because the site is served under a path prefix rather than at the root of a
+         host. A leading slash here would resolve to the host's root and not be found. -->
+    <link rel="stylesheet" href="style.css" />
+    <!-- The canonical address is where the project is deployed. The prefix is part of it, so this
+         is written out rather than derived from the current URL, which would be wrong behind a
+         proxy that strips the prefix. -->
+    <link rel="canonical" href="https://strandz.it/fluidmark/" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header>
+      <h1>FluidMark</h1>
+      <p class="tagline">
+        Watermarking for music. Put an identifier in a track and get it back out of the marked
+        file. Nothing is uploaded: the work happens in this page.
+      </p>
+      <nav aria-label="Sections">
+        <a href="#make">Make a mark</a>
+        <a href="#read">Read a mark</a>
+        <a href="spec.html">How it works</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <!-- Both operations report progress into this one region, so a screen reader hears the
+           same thing whichever button was pressed, and so there is one live region rather than
+           several that can talk over each other. -->
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <section id="make" aria-labelledby="make-heading">
+        <h2 id="make-heading">Make a mark</h2>
+        <p>
+          Type an identifier and mark a music file with it. The mark is mixed into the audio and
+          the file is written to your computer. You can also mark a file you are given.
+        </p>
+
+        <div class="field">
+          <label for="payload">Identifier</label>
+          <!-- maxlength matches what the tone table can carry, and the counter is there because
+               a limit you cannot see is a limit you discover by being refused. -->
+          <input
+            type="text"
+            id="payload"
+            name="payload"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="63"
+            aria-describedby="payload-help payload-count"
+          />
+          <p id="payload-help" class="help">
+            Up to 63 characters. A URL or IRI works well, because that is what a mark is for.
+          </p>
+          <p id="payload-count" class="help count"></p>
+        </div>
+
+        <div class="field">
+          <label for="carrier">Scheme</label>
+          <select id="carrier" aria-describedby="carrier-help">
+            <option value="tones">Tones (audible, WebBeeps style)</option>
+            <option value="steg">Watermark (inaudible)</option>
+          </select>
+          <p id="carrier-help" class="help">
+            Tones are audible and are the original scheme, kept for compatibility. The watermark
+            scheme is inaudible and is the one to use.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="source">Music file</label>
+          <input type="file" id="source" name="source" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" aria-describedby="source-help source-info" />
+          <p id="source-help" class="help">WAV, MP3, FLAC, OGG or M4A. Nothing leaves this page.</p>
+          <!-- Announced by nothing on some browsers, so it is also in text. -->
+          <p id="source-info" class="help file-info" data-empty="No file chosen.">No file chosen.</p>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="mark-button" class="primary">Mark this file</button>
+          <button type="button" id="cancel-mark" hidden>Cancel</button>
+        </div>
+        <div id="mark-result" class="result" hidden>
+          <h3>Your marked file</h3>
+          <p><a id="mark-download" class="download" download>Download the marked file</a></p>
+          <p id="mark-detail" class="help"></p>
+        </div>
+      </section>
+
+      <section id="read" aria-labelledby="read-heading">
+        <h2 id="read-heading">Read a mark</h2>
+        <p>
+          Choose a marked file and read the identifier back out of it. A file with no mark says so
+          rather than reporting something.
+        </p>
+
+        <div class="field">
+          <label for="marked">Marked file</label>
+          <input type="file" id="marked" name="marked" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" aria-describedby="marked-help marked-info" />
+          <p id="marked-help" class="help">WAV or MP3. Nothing leaves this page.</p>
+          <p id="marked-info" class="help file-info" data-empty="No file chosen.">No file chosen.</p>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="read-button" class="primary">Read the mark</button>
+          <button type="button" id="cancel-read" hidden>Cancel</button>
+        </div>
+
+        <div id="read-result" class="result" hidden>
+          <h3 id="read-heading-result">What was found</h3>
+          <!-- The three outcomes are three different elements rather than one box with text in
+               it, so "nothing here" cannot be mistaken for "an empty identifier". -->
+          <p id="read-payload" class="payload" hidden></p>
+          <p id="read-none" class="notice" hidden></p>
+          <p id="read-damaged" class="notice" hidden></p>
+        </div>
+      </section>
+
+      <section aria-labelledby="about-heading">
+        <h2 id="about-heading">About this</h2>
+        <p>
+          This is a port and extension of
+          <a href="https://github.com/danja/WebBeep">WebBeeps</a>, Danny Ayers' audible tone
+          watermarking, which was live at <a href="https://webbeep.it/">webbeep.it</a> and did the same two jobs in the
+          same page. The tone scheme is unchanged so that old files still read. The watermark
+          scheme is new and is what the site is for.
+        </p>
+        <p>
+          Everything runs in this page: the audio is decoded here, the codec is here, and nothing
+          is sent anywhere. <a href="spec.html">How it works</a> has the detail.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        FluidMark, by Danny Ayers. <a href="spec.html">Specification</a> &middot;
+        <a href="applications.html">Applications</a>
+      </p>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -94,19 +94,33 @@ included, with the reading taken recorded in `docs/port.md`.
 
 ## Delivery 2: the steganographic layer and the native apps
 
-The actual goal. `docs/steganography.md` has the carrier reasoning and the attack list.
+The actual goal. `docs/steganography.md` has the carrier reasoning, the attack list and the
+measured baseline.
 
-- [ ] **The attack harness**, built first, against an LSB baseline. Transcode, resample, gain, dither, filter, time
-      shift, crop, stereo to mono, and a DAW render cycle. A harness written after the scheme exists will have been
-      written to prove the scheme works.
-- [ ] **An LSB baseline**, as the control the harness is calibrated with. It should fail most of the list, and that is
-      the result worth having.
-- [ ] **Spread spectrum in a transform domain**: keyed spreading sequence, a sync word the decoder can find, a length
-      field, FEC, and interleaving. The payload rate is low, which is fine for an IRI.
-- [ ] **The psychoacoustic layer**, so the mark sits under a masking threshold rather than at a fixed level.
-- [ ] **Header recognition**, so "no mark here" is a reportable answer rather than a plausible wrong payload.
-- [ ] **The native applications**: embed and extract, over the same core the browser and the tools use.
-- [ ] **The audibility criterion**, measured, and the listening verdict from `HUMANS.md`.
+- [x] **The payload frame**: magic, version, flags, length, CRC-16, so a reader can say "no mark
+      here" rather than reporting whatever bytes it read. `wasm/src/frame.rs` and `src/frame.js`,
+      mirrored, with a test that they agree.
+- [x] **The attack harness**, before the scheme it measures. 17 attacks in `src/attacks.js` and
+      `wasm/src/attack.rs`: gain, dither, white and pink noise, low-pass, high-pass, resampling,
+      time shift and crop, plus lossy transcoding through ffmpeg when it is there.
+- [x] **The LSB baseline**, as the control the harness is calibrated against. Keyed positions, one
+      bit per sample in the 16-bit representation.
+- [x] **The measured baseline**, in `docs/steganography.md`. Every attack in the brief's list leaves
+      the payload unreadable at a bit error rate near 50%, which is random.
+- [x] **A false-positive measurement**: 20 noise buffers, none reported as carrying a mark.
+- [x] **`bin/attack.js`**, which prints the table and can write the marked file.
+- [ ] **Spread spectrum in a transform domain.** Keyed spreading sequence, a sync word the decoder
+      can find, a length field, FEC and interleaving. The bar is in the table in
+      `docs/steganography.md`: `resample to 48 kHz` and `mp3 64k` must beat 50%.
+- [ ] **Synchronisation.** LSB has no sync word, so a reader has to be told the payload's length.
+      This is why `extract` requires `payloadBytes` and why a real scheme cannot.
+- [ ] **Forward error correction and interleaving.** So a burst of damage costs symbols rather than
+      the message. Transcoding damage arrives in one band.
+- [ ] **The psychoacoustic layer**, so the mark sits under a masking threshold rather than at a
+      fixed level. Needs the audibility criterion from the decisions list first.
+- [ ] **The native applications**: embed and extract, over the same core the browser and the tools
+      use.
+- [ ] **Stereo.** Everything so far is mono, and real music is not.
 
 ## Delivery 3: the VST plugin, later
 
@@ -143,29 +157,27 @@ Per delivery, so that each is held to its own standard.
 ## The web front end
 
 The site goes online with the same functionality as `reference/WebBeep/www`. `docs/web.md` has what the previous version
-was and what the port keeps. The page is a host for the codec, so it needs the codec before it needs itself.
+was, what the port keeps, and how to check it. The page is a host for the codec, so it needs the codec before it needs
+itself.
 
-- [ ] **Encode outputs WAV.** The previous site encoded to WAV and then handed back an MP3 made with `lame --abr 64`, so
-      a marked track arrived lossy by default. The page hands back the WAV. MP3 is not dropped from the project: it is the
-      decode direction that needs it, below.
-- [ ] **A lossy decoder in the page**, so an MP3 can be decoded. This is not covered by the WAV codec in the port plan and
-      is a real piece of work: WebCodecs `AudioDecoder` where it exists, a WASM decoder elsewhere. Users hold MP3s because
-      that is what the previous site handed them, so an MP3-only upload failing is a regression, not a missing feature.
-- [ ] **`www/index.html`: Make Beeps and Decode Beeps.** Vanilla JS, no framework, no build step beyond the Wasm module.
-- [ ] **Progress and cancel on a long operation.** A four-minute track is not instant, and a page that appears hung is a
-      page people reload.
-- [ ] **Three decode outcomes, reported distinctly**: a payload, no mark found, and found-but-damaged. Returning an empty
-      string for both failures teaches a user the tool is broken.
-- [ ] **Accessibility to WCAG 2.2 AA**, as new work rather than a retrofit. The previous markup is from about 2011: no
-      `viewport` tag, and image-only buttons as the visible affordance for each form.
-- [ ] **Narrow layout, measured** at 360px in a real browser: `scrollWidth` against `innerWidth`, every target 44px, text
-      input 16px.
-- [ ] **Port the remaining pages**: `spec.html` and `implementation.html` revised to describe the port, `applications.html`
-      and `template.html` as they are.
-- [ ] **The page and the tools driven by the same code**, with a check that notices a divergence. A codec that works in
-      one host and not another is the defect this arrangement exists to prevent.
-- [ ] **Deployment check**: every page and both operations reachable by a real request, the Wasm module served with a
-      cache policy decided in advance, and nothing loaded from a third party.
+- [x] **`www/index.html`, `style.css` and `app.js`.** Vanilla JS, no framework, no build step beyond the Wasm module.
+      Both operations run in the page. Three read outcomes as three elements, so "no mark" cannot be read as "an empty
+      identifier".
+- [x] **MP3 decode in the page**, by walking the frames and handing each to the browser's own `AudioDecoder` through
+      WebCodecs. Needed because the files people hold from the old site are MP3s.
+- [x] **Markup tests**, in `tests/web.test.js`: every id `app.js` reaches for exists, nothing loads from a third party,
+      every control has a label, one live region, the touch-target and font-size rules hold.
+- [x] **A Dockerfile and an nginx configuration.** Multi-stage: the Wasm core is built in one stage and the running
+      image contains only nginx and the files it serves. No Node, no Rust, no npm packages at runtime.
+- [x] **A deployment check** written down in `docs/web.md`, run against the container.
+- [ ] **Deploy it.** Needs a host and a domain. The old site was `webbeep.it`; whether that name is kept or a new one is
+      taken is still open in the decisions list, and it changes every canonical link.
+- [ ] **A browser check in a real browser**, which is a person: layout at 360px, focus order, the pointer, and a screen
+      reader pass. All in `HUMANS.md`, none of it checkable from a DOM without a renderer.
+- [ ] **Progress and cancel that actually work.** The page has the region and the buttons; a cancel that cannot interrupt
+      a Wasm call is not a cancel. Decide whether to decode in a worker so it can be interrupted, or drop the buttons.
+- [ ] **Stereo.** The page and the core both work in mono, and a stereo file is refused rather than half-read.
+- [ ] **The remaining pages**: `spec.html` and `applications.html` are linked from `index.html` and do not exist yet.
 
 ## Reading
 

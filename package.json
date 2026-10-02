@@ -22,7 +22,11 @@
     "test:core": "cargo test --release --manifest-path wasm/Cargo.toml",
     "test:native": "node bin/check-native-link.js",
     "test:js": "vitest run",
-    "test": "npm run build && npm run test:core && npm run test:native && npm run test:js"
+    "test": "npm run build && npm run test:core && npm run test:native && npm run test:js",
+    "check:web": "node www/browser-check.js http://127.0.0.1:8080",
+    "docker:build": "docker build -t fluidmark:local .",
+    "docker:run": "docker run --rm -p 8080:8080 fluidmark:local",
+    "docker:check": "docker build -t fluidmark:local . && node www/browser-check.js http://127.0.0.1:8080"
   },
   "devDependencies": {
     "vitest": "^3.2.4"

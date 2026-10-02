@@ -1,0 +1,19 @@
+# Build context. Everything here is either rebuilt in the image or is host-specific.
+.git
+.gitignore
+node_modules
+package-lock.json
+wasm/target
+build
+tests
+docs
+reference
+*.md
+!README.md
+.env
+*.log
+Dockerfile
+.dockerignore
+
+# The browser check runs on the host against a running container, so it must not be copied in.
+www/browser-check.js

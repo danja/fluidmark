@@ -90,6 +90,52 @@ labels beyond adjacent text. The port needs to meet WCAG 2.2 AA as new work, per
 | `applications.html` | Who it is for | Port as prose |
 | `template.html` | Layout the others share | With the first |
 
+## How to check the front end
+
+`npm run docker:check` builds the image, serves it, and drives the real page in a real browser.
+
+`tests/web.test.js` checks the markup: that every id `app.js` reaches for exists, that the page
+loads nothing from a third party, that every control has a label, and that the stylesheet keeps the
+touch-target and font-size rules. Those catch the changes that break the page for a person while
+every other test still passes.
+
+What it cannot check is layout, focus order, or the pointer, because a DOM without a renderer has
+none of them. Two specific measurements, both in `HUMANS.md` because they need a real browser:
+
+- **Narrow layout.** At 360px, `documentElement.scrollWidth` should equal `innerWidth`. Not
+  `clientWidth`, which includes padding. Every target at least 44px, the text input at least 16px.
+- **Focus and pointer.** Tab through both forms and count the stops. A drag that stops at the edge
+  of its element, and a control that can be nudged once by keyboard, both pass every unit test,
+  because there is no pointer capture to fail and no `activeElement` to lose.
+
+**Deployment check**, run against the container rather than the source tree:
+
+```sh
+docker build -t fluidmark:local .
+docker run --rm -p 8080:8080 fluidmark:local &
+curl -sI http://127.0.0.1:8080/ | head -1
+curl -sI http://127.0.0.1:8080/build/fluidmark_core.wasm | grep -i content-type
+curl -s  http://127.0.0.1:8080/healthz
+```
+
+The content-type check is the one that matters: `application/wasm` or the browser falls back to
+compiling the whole module as an `ArrayBuffer`, which works, is slower, and says nothing about it.
+
+**Browser check.** `www/browser-check.js` drives the page in headless Chrome over the DevTools
+protocol, with no browser-automation dependency, and reports sixteen things: the Wasm module
+loading over HTTP with the right content type, both schemes round-tripping *in the page*, unmarked
+audio not being reported as marked, and then the layout measurements that a DOM without a
+renderer cannot make.
+
+It sets the viewport to 360px rather than the headless default of about 780, which is the whole
+point: a layout with a fixed-width child looks correct at 780 and is unusable on a phone. Measured
+at 360px, `scrollWidth` equals `innerWidth`, every visible target is at least 44px, and every text
+input computes to 16px.
+
+Two things it deliberately does not do, both in `HUMANS.md`: it does not press real keys (scripted
+focus shows whether an element is focusable, not whether the tab order is right), and it has no
+screen reader.
+
 ## Notes for whoever builds this
 
 - **AudioWorklet is not needed for either operation.** Both are file in, file out, and take
