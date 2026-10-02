@@ -124,3 +124,57 @@ Not "it decodes what it encoded", though that is the floor. The port is done whe
    deliberately not reproduced, with a test that would notice if it changed.
 4. The result runs from Node. Nothing in the port requires a browser, and nothing in it
    requires a display.
+## Where the port has got to, and how it was checked
+
+Checked on 2026-10-02, with `npm test`.
+
+**It reads the reference's own output.** The file that settles whether this is a port is
+`reference/WebBeep/data/beeps.wav`: the reference's `CodecTest` encodes the string `"abc"` into
+it, so recovering `"abc"` is two implementations agreeing rather than a round trip through our
+own encoder. It does.
+
+| Reference material | Result |
+|---|---|
+| `data/beeps.wav` | `abc`, correct |
+| `data/testin.wav`, `noisy.wav`, `reverby.wav`, `3db-clipping.wav` | no mark found, correct |
+| `www/audio/qwe.mp3`, `dfgdfg.mp3`, `sdfsdfs.mp3`, `Qwerf.mp3` | recovered, matching the filename |
+| `www/audio/ISP_loveSP_you!.mp3` | `I love you!`, correct |
+| `www/audio/Example.mp3` | twenty printable but wrong bytes; **refused** on checksum |
+
+The `Example.mp3` case is the interesting one. A twenty-character payload decodes to plausible
+printable characters that are not the payload, which means the grid has drifted rather than the
+tones being absent. The checksum catches it and the decoder reports "damaged" instead of a wrong
+answer, which is the behaviour that matters more than recovering it. It is recorded as a test so
+the failure stays visible.
+
+**94 of 95 printable ASCII characters round trip**, each tested alone. The one that does not is
+`@` (0x40), and the reason is marginal: the cropper trims to the samples above the threshold, and
+for that byte the trimmed length falls two samples short of the decoder's second crop, so the
+final character has no crop to be read from. One sample of margin fixes it, and
+`core_encoded_size` now allows a sample per chunk for exactly this reason.
+
+**The parameters are not the defaults.** The port uses the values in `data/config.xml`, which the
+reference's genetic algorithm produced, rather than those in `Constants.java`. With the
+`Constants.java` defaults the round trip does not work at all, and `MISTAKES.md` has the
+mechanism.
+
+### What is still missing from the first pass
+
+- The **filters**: high-pass and two low-pass FIRs, and the compressor. All four are off in the
+  configuration that works, so they are not on the critical path, and they are the largest
+  remaining piece of the reference.
+- **Punycode and the checksum** are on the JavaScript side rather than in the core, on the grounds
+  that they are a text concern and the platform provides punycode in both hosts.
+- **Resampling.** The reference is 22050 Hz throughout and this port is too. Real music is 44.1 or
+  48 kHz, and this is where a tone-based mark breaks first.
+
+## A decision made while porting: where the codec lives
+
+The plan had the pipeline split across the boundary, with the DSP in Rust and the chunker, cropper
+and pipeline in JavaScript. With the boundary real, that means a buffer allocation and a copy per
+stage, for a pipeline of about six.
+
+It is now: **everything that touches samples is in Rust**, including the tone tables, waveform
+generation, envelope, normalise, crop, chunk and the pitch finder. **Text stays in JavaScript**,
+where punycode, checksums and string handling are built in. The boundary is crossed twice per
+operation, once for the payload bytes in and once for the tones or the payload out.

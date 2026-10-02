@@ -14,12 +14,23 @@ One Rust crate, two artifacts, one set of `extern "C"` functions:
 ```
 wasm/     the core: DSP behind a C ABI, built as libfluidmark_core.a and .wasm
 src/      the JavaScript wrapper: typed arrays instead of pointers, real errors
-bin/      Node tools, one per command
+bin/      Node tools
 tests/    Vitest, mirroring src/
 ```
 
 `npm test` builds the core, runs the Rust tests, runs a C++ link check against the static
 library, then the Vitest suite. `docs/ffi.md` is the boundary contract.
+
+```sh
+npm run build
+node bin/mark.js --in track.wav --payload "http://example.org/" --out marked.wav
+node bin/mark.js --in marked.wav --read
+```
+
+The first pass works, and it is checked against the reference implementation's own output rather
+than against itself: it reads `reference/WebBeep/data/beeps.wav` back as `abc`, and five of the
+six MP3s the live service produced give their payloads. `docs/port.md` has the numbers, including
+the one that fails and why.
 
 ## The payload
 

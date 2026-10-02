@@ -165,6 +165,60 @@ Prevention: a page renders from state in the browser. If something must substitu
 placeholder it owns, and a test asserts the placeholder still exists, because a placeholder that stops existing is
 invisible from every layer above it.
 
+## A collection type was doing load-bearing work nobody had written down
+
+**Found while porting the reference's pitch finder: its `HashSet<Double>` is not incidental.**
+The reference's tone table repeats six frequencies, each twice, distinguished only by duration.
+`GoertzelPitchFinder` iterates all 24 table entries, so a frequency that appears twice is
+computed twice and reported twice, and the character decoder infers a tone's duration from how
+many pitches it found: two means both ran long, none means both ran short, one means they
+differ. Reporting 24 indices instead of distinct frequencies makes that count never match.
+
+The port's first version reported table indices, faithfully, and every character decoded to
+garbage. "abc" came back as `[17, 18, 19]`: the low nibble right, the high nibble consistently
+wrong, because the low note resolved to the first of two entries sharing its frequency.
+
+Prevention: when porting, ask what each data structure in the original is *for*, not only what it
+contains. A `Set` where a `List` would do is a claim, and the claim here was deduplication. Where
+the claim matters, say so in the port's own words, because a reader who does not know it was
+deliberate will "simplify" it back into a list and lose every character.
+
+## The parameters in the constants file were not the parameters that worked
+
+**The reference's round trip does not work with the defaults in its own `Constants.java`.**
+`gThreshold` is 10000 there and 4194.9 in `data/config.xml`; `cropProportion` is 0.5 versus
+0.6338; `silenceThreshold` is 0.5 versus 0.393; and `Decoder.core.normalise.on` is false in the
+configuration the service actually ran with.
+
+The mechanism: normalising to +/-1 and then cropping at a threshold of 0.5 trims the envelope
+ramps off the front and back of the tones. That shifts the decoder's crop grid off the encoder's
+slot grid by however long the ramps are, and every character after the first is read from the
+wrong place. Turning normalisation off and thresholding at 0.393 against the raw signal, whose
+tones sit at amplitude 0.49, makes the crop find the true first and last tone sample.
+
+So the genetic algorithm's output is not tuning, it is part of the algorithm. It is carried in
+`wasm/src/tables.rs` as the defaults, with the `Constants.java` values recorded alongside so a
+change to either is visible in a diff.
+
+Prevention: when porting, find the configuration the reference actually ran with and compare it
+against the defaults in its source, before writing any pipeline. A default nobody exercised is a
+value somebody guessed.
+
+## Two copies of a length, and the copy that was read was the stale one
+
+**The JavaScript wrapper read its own idea of a buffer's length after the core had changed it.**
+`readBuffer` returned `new Float32Array(buffer.length)` from a field the wrapper kept, while
+`core_encode` sets the length on the core's side of the boundary. So marking a payload produced
+an empty array, every read failed, and the error named the length rather than the wrapper.
+
+The symptom was a `CoreLengthError` from an output buffer that had just been filled, and then a
+`RangeError` from a test that only wanted to look at silence. `readBuffer` now asks the core,
+which is one call and removes the class of bug rather than this instance of it.
+
+Prevention: on a boundary, one side owns each fact and the other asks. This is the same lesson as
+`core_buffer_capacity`, reached from the other direction, and the two together are why both
+length and capacity can be read back from the core.
+
 ## The fragile parts of a reference are the parts a port should record rather than repair
 
 Found by reading `reference/WebBeep`, not by running it. Four places where the reference depends on a coincidence:

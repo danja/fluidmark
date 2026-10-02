@@ -67,22 +67,30 @@ Recorded so they are not relitigated, and so a later reader can see what was cho
 ## Delivery 1: the WebBeeps first pass
 
 A baseline that makes the plumbing real. In dependency order, each piece ported as the reference does it, fragile parts
-included, with the reading taken recorded in `docs/port.md`. See that document for the table: the DSP in Rust, the tables
-and the codec in JavaScript.
+included, with the reading taken recorded in `docs/port.md`.
 
-- [ ] **`Tone` and `Chunks`**: the sample buffer types everything else operates on.
-- [x] **Goertzel power.** The recurrence and power formula of `reference/WebBeep`'s `Goertzel.getPower`, in
-      `wasm/src/dsp.rs`, tested in Rust and from both hosts. What is **not** done is the pitch finder: the part that
-      runs this over all 24 table frequencies and reports the ones above a threshold, which needs the tone table first.
-- [ ] **Filters, resampler, normalise, compressor, envelope shaper.** FIR and IIR designs carry real parameters that have
-      to match the reference's exactly or nothing decodes.
-- [ ] **WAV read and write**, plus a fixture loader for the reference's `data/*.wav`.
-- [ ] **Tone tables** (`Maps`, `Constants`) as frozen data, imported by both sides. One source, per the conventions.
-- [ ] **ASCII codec, checksum, punycode.**
-- [ ] **Chunker, cropper and the processor pipeline.**
-- [ ] **Encode and decode entry points**, then `bin/` tools for encode, decode, and a robustness sweep.
-- [ ] **Comparison against the reference**, running the reference and the port over the same material and comparing
-      outputs. Self-comparison passes for a port that is wrong the same way twice.
+- [x] **The core and its C ABI.** Rust crate emitting a `staticlib` and a Wasm module, versioned buffers with a tracked
+      length and capacity, scratch for out-parameters, error codes rather than panics. `docs/ffi.md`.
+- [x] **Tone tables and constants**, in `wasm/src/tables.rs`, carrying the `data/config.xml` values rather than the
+      `Constants.java` ones, because the latter do not round trip.
+- [x] **Goertzel power**, matching `reference/WebBeep`'s recurrence and power formula exactly.
+- [x] **The pitch finder**, reporting distinct frequencies, which is what the reference's `HashSet` amounts to and what
+      its duplicated table entries make load bearing.
+- [x] **The signal processors**: normalise, envelope, crop, chunk. The ones the working configuration switches off are
+      ported too, since they are part of the reference.
+- [x] **The text codec**: bytes to dual tones and back, the envelope, the padding.
+- [x] **The end-to-end round trip**, 94 of 95 printable ASCII characters alone, and silence and noise decoding to nothing.
+- [x] **The JavaScript wrapper and the payload layer**, with the checksum verifying rather than merely logging.
+- [x] **WAV read and write**, mono 16-bit, walking the chunk list.
+- [x] **`bin/mark.js`**, marking and reading a file.
+- [x] **Cross-implementation validation.** Reading `data/beeps.wav` gives `abc`, and five of the six MP3s the live
+      service produced give their payloads. `tests/reference.test.js`.
+- [ ] **The filters and the compressor.** High-pass and two low-pass FIRs plus the compressor, all off in the
+      configuration that works, so not on the critical path and the largest piece of the reference still missing.
+- [ ] **WAV writing from the CLI is done; WAV reading of anything but 16-bit mono is not.** A stereo or 24-bit file is
+      refused rather than half-read, which is deliberate, but a real tool needs to handle what people actually have.
+- [ ] **A lossy decoder in Node**, so the CLI can read an MP3 without shelling out to ffmpeg. The browser side needs the
+      same thing and it is in the front end section.
 
 ## Delivery 2: the steganographic layer and the native apps
 

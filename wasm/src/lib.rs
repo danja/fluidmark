@@ -9,7 +9,10 @@
 //! length in a header and writes it. That removes the whole class of bug where a length
 //! disagrees with the allocation, which is a crash at best and a wrong measurement at worst.
 
+pub mod attack;
 pub mod codec;
+pub mod frame;
+pub mod lfs;
 pub mod dsp;
 pub mod pitch;
 pub mod roundtrip;
@@ -17,6 +20,7 @@ pub mod signal;
 pub mod tables;
 
 use std::alloc::Layout;
+
 
 /// Bumped whenever a signature here changes. Hosts check it at startup, because a stale
 /// library linked into a rebuilt host is a crash or a wrong answer with nothing in any log.
@@ -225,6 +229,182 @@ pub unsafe extern "C" fn core_buffer_set_len(ptr: *mut f32, n: u32) -> i32 {
     }
     header.len = n;
     CORE_OK
+}
+
+/// Samples of output `core_encode` needs for `byte_count` bytes of payload.
+///
+/// The caller sizes the output buffer with this rather than guessing, and a guess that is one
+/// sample short costs the whole final crop: the decoder's grid needs the second half of the
+/// last tone, and without it the last character is lost.
+#[no_mangle]
+pub extern "C" fn core_encoded_size(byte_count: u32) -> u32 {
+    let chunks = codec::bytes_to_chunks(&(0..byte_count).map(|_| 0u8).collect::<Vec<u8>>()).len();
+    // A chunk is two slots, and a long tone comes to one sample more than two slots because
+    // `22050 * 0.048611111 * 2` truncates to 2143 rather than 2142. The extra sample has to be
+    // allowed per chunk or the last chunk does not fit and the payload loses its final
+    // character.
+    let pad = (tables::START_PAD_DURATION * tables::SAMPLE_RATE as f64) as u32
+        + (tables::END_PAD_DURATION * tables::SAMPLE_RATE as f64) as u32;
+    let slot = tables::tone_slot_samples();
+    (chunks as u32) * (slot * 2 + 1) + pad
+}
+
+/// Bytes of payload `core_decode` can return from `sample_count` samples.
+///
+/// An upper bound: two samples of output per crop, and a crop every slot.
+#[no_mangle]
+pub extern "C" fn core_decoded_size(sample_count: u32) -> u32 {
+    let slot = tables::tone_slot_samples();
+    (sample_count / slot.max(1)) + 2
+}
+
+/// Encode the payload bytes tracked in `input` into the sample buffer `output`.
+///
+/// `input` is a payload buffer, so its tracked length is a count of **bytes**, read through a
+/// byte view. `output` is a sample buffer and its length is a count of **samples**. The two
+/// element sizes differ deliberately: a JavaScript payload has to be staged in the module's own
+/// memory before any export can read it, and a sample buffer is the only kind there is.
+///
+/// Returns `CORE_ERR_LENGTH` if `output` is too small; `core_encoded_size` is how to size it.
+#[no_mangle]
+pub unsafe extern "C" fn core_encode(input: *const f32, output: *mut f32) -> i32 {
+    if input.is_null() || output.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(input_header) = header_of(input) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(output_header) = header_of(output) else {
+        return CORE_ERR_MAGIC;
+    };
+    if input_header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+
+    // The payload buffer holds bytes, not samples. `core_buffer_set_len` counted bytes for
+    // this call, so the data is read through a byte view rather than an f32 one. Which element
+    // size a buffer's length is counted in is decided by the entry point that touches it, and
+    // every entry point says which in its documentation.
+    let bytes: Vec<u8> =
+        std::slice::from_raw_parts(input as *const u8, input_header.len as usize).to_vec();
+    let tones = codec::encode_bytes(&bytes);
+    if tones.len() > output_header.cap as usize {
+        return CORE_ERR_LENGTH;
+    }
+    std::ptr::copy_nonoverlapping(tones.as_ptr(), output, tones.len());
+    output_header.len = tones.len() as u32;
+    CORE_OK
+}
+
+/// Decode the samples tracked in `input` into the payload bytes tracked by `output`.
+///
+/// `input` is a sample buffer and its length counts samples; `output` is a payload buffer and
+/// its length becomes a count of **bytes**. `output` is overwritten including its length, so
+/// it does not need to be written first.
+#[no_mangle]
+pub unsafe extern "C" fn core_decode(input: *const f32, output: *mut f32) -> i32 {
+    if input.is_null() || output.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(input_header) = header_of(input) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(output_header) = header_of(output) else {
+        return CORE_ERR_MAGIC;
+    };
+    if input_header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+
+    let tones = std::slice::from_raw_parts(input, input_header.len as usize);
+    let bytes = roundtrip::decode_tones(tones, tables::SAMPLE_RATE as f64);
+    if bytes.len() > output_header.cap as usize {
+        return CORE_ERR_LENGTH;
+    }
+    if !bytes.is_empty() {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), output as *mut u8, bytes.len());
+    }
+    output_header.len = bytes.len() as u32;
+    CORE_OK
+}
+
+/// Embed a frame into an audio buffer, in place.
+///
+/// `audio` holds samples and its length counts samples. `frame` holds bytes and its length counts
+/// bytes. Both must already be written; this only reports success.
+#[no_mangle]
+pub unsafe extern "C" fn core_embed_lsb(
+    audio: *mut f32,
+    frame: *const f32,
+    key_lo: u32,
+    key_hi: u32,
+) -> i32 {
+    if audio.is_null() || frame.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(audio_header) = header_of(audio) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(frame_header) = header_of(frame) else {
+        return CORE_ERR_MAGIC;
+    };
+    if audio_header.len == 0 || frame_header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+    // A frame of n bytes needs n * 8 samples, one per bit.
+    let bits = (frame_header.len as usize) * 8;
+    if bits > audio_header.len as usize {
+        return CORE_ERR_LENGTH;
+    }
+
+    let key = ((key_hi as u64) << 32) | key_lo as u64;
+    let samples = std::slice::from_raw_parts(audio, audio_header.len as usize).to_vec();
+    let bytes = std::slice::from_raw_parts(frame as *const u8, frame_header.len as usize).to_vec();
+    let marked = lfs::embed(&samples, &bytes, key);
+    std::ptr::copy_nonoverlapping(marked.as_ptr(), audio, marked.len());
+    CORE_OK
+}
+
+/// Read `frame_bytes` of frame bytes out of an audio buffer.
+///
+/// `frame_bytes` comes from the caller because LSB has no sync word to find the start with, so a
+/// reader has to be told how much to read. The spread-spectrum scheme carries the length in the
+/// stream instead, and that difference is a real limitation of this one.
+#[no_mangle]
+pub unsafe extern "C" fn core_extract_lsb(
+    audio: *const f32,
+    frame_bytes: u32,
+    key_lo: u32,
+    key_hi: u32,
+    out: *mut f32,
+) -> i32 {
+    if audio.is_null() || out.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(audio_header) = header_of(audio) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(out_header) = header_of(out) else {
+        return CORE_ERR_MAGIC;
+    };
+    if frame_bytes == 0 || frame_bytes > out_header.cap {
+        return CORE_ERR_LENGTH;
+    }
+
+    let key = ((key_hi as u64) << 32) | key_lo as u64;
+    let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
+    let bytes = lfs::extract(samples, frame_bytes as usize, key);
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    out_header.len = bytes.len() as u32;
+    CORE_OK
+}
+
+/// Frame bytes, header included, for a payload of `payload_bytes`.
+///
+/// The reader needs this, because LSB has no sync word to measure against.
+#[no_mangle]
+pub extern "C" fn core_frame_bytes_for(payload_bytes: u32) -> u32 {
+    lfs::frame_bytes_for(payload_bytes as usize) as u32
 }
 
 /// Goertzel power at `freq` over a buffer's tracked length, through an out-parameter.
