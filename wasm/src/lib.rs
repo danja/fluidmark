@@ -9,7 +9,12 @@
 //! length in a header and writes it. That removes the whole class of bug where a length
 //! disagrees with the allocation, which is a crash at best and a wrong measurement at worst.
 
+pub mod codec;
 pub mod dsp;
+pub mod pitch;
+pub mod roundtrip;
+pub mod signal;
+pub mod tables;
 
 use std::alloc::Layout;
 
