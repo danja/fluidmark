@@ -4,9 +4,24 @@ Watermarking for music. Mark a track with an identifier, and get that identifier
 of the marked file, where the mark is inaudible and survives significant processing and
 degradation in both the time and frequency domains.
 
-Nothing is built yet. This repository holds guidance and the plan.
+The plan is in `TODO.md`, the guidance in `AGENTS.md`. What is built is small and real: the
+Rust core, its C ABI, and the boundary tests.
 
-## What the payload is
+## The core
+
+One Rust crate, two artifacts, one set of `extern "C"` functions:
+
+```
+wasm/     the core: DSP behind a C ABI, built as libfluidmark_core.a and .wasm
+src/      the JavaScript wrapper: typed arrays instead of pointers, real errors
+bin/      Node tools, one per command
+tests/    Vitest, mirroring src/
+```
+
+`npm test` builds the core, runs the Rust tests, runs a C++ link check against the static
+library, then the Vitest suite. `docs/ffi.md` is the boundary contract.
+
+## The payload
 
 A header declaring that a mark is present, then basic metadata, then an identifying IRI,
 then arbitrary text. The IRI is the point of the system: it says where the recording came
@@ -16,15 +31,15 @@ from, so it should be the part that is always present and always reliable.
 
 1. **A first pass, audible.** Ported from WebBeeps, which writes a payload as tones. A
    baseline that makes the plumbing and the tests real. `docs/port.md`.
-2. **A VST plugin**, following the patterns of `~/github/downspout`, that takes text and
-   generates a repeated MIDI pattern derived from it, for use as a bassline or melody. A
-   musical carrier rather than an audible overlay.
-3. **The steganographic layer and native applications.** The actual goal: an inaudible mark,
-   embedded from a native app or a mastering-chain plugin and extracted by an app.
+2. **The steganographic layer and native applications.** The actual goal: an inaudible mark,
+   embedded and extracted, surviving transcoding, filtering, gain, resampling and the rest.
    `docs/steganography.md`.
+3. **A VST plugin**, later, following the patterns of `~/github/downspout`: text in, a
+   repeated MIDI pattern out, for use as a bassline or melody. Probably C++ with DPF.
 
-A browser front end goes online alongside all three, with the same functionality as the
-previous site. `docs/web.md`.
+What is being built now is Rust compiled to Wasm, driven by a browser front end and Node
+tools. A browser front end goes online with the same functionality as the previous site, and
+runs the codec in the page rather than on a server. `docs/web.md`.
 
 ## What exists so far
 
@@ -38,4 +53,5 @@ previous site. `docs/web.md`.
 - `docs/port.md`, the first pass and where the reference falls short of the goal.
 - `docs/steganography.md`, the carrier choice, the attack list, and how results are judged.
 - `docs/web.md`, the browser front end.
+- `docs/ffi.md`, the boundary between the Rust core and its hosts.
 - `AGENTS.md`, `TODO.md`, `INBOX.md`, `HUMANS.md`, `MISTAKES.md`, the working guidance.

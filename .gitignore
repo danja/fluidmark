@@ -143,3 +143,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# fluidmark build output
+build/
+wasm/target/

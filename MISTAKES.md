@@ -60,6 +60,75 @@ Prevention: a scripted browser step asserts success on every call and throws. A 
 records how many samples it took. `AGENTS.md` requires running the program after any change to imports, wiring or startup,
 for the same reason: the suite does not catch that class of failure.
 
+## An allocation that did not cover its own header wrote over the next one
+
+**Found by the first run of the FFI boundary tests, and it was a heap overflow in new code.**
+`core_scratch_new` allocated `SCRATCH_BYTES` (8) but wrote a `HEADER_BYTES` (16) header into
+the allocation and returned `base + 16`, so the header sat entirely past the end of what had
+been reserved. The allocator then placed the next buffer inside those 16 bytes, and every
+out-parameter write landed on that buffer's header.
+
+The symptom was a `core_buffer_free` reporting `CoreMagicError` on a buffer that had just been
+written and read back correctly. Nothing upstream was wrong: the tracked length was right, the
+samples were right, and the free of that same pointer failed. Two hypotheses were wrong first,
+in order: that `memory.grow` had detached something, and that the static data segment occupied
+low addresses. Both were reasonable and both were wrong, and what separated them was printing
+the sixteen header bytes before and after each call, which showed the magic changing from
+`314b4d46` to `03000000`, the length, written at an address that belonged to something else.
+
+Prevention: a header inside an allocation means the layout must cover the header. Where a host
+and a core each keep a copy of a buffer's length or capacity, add a way to ask the core what it
+believes. The two agreeing is a check, and the two disagreeing is a bug report that names its own
+cause. `core_buffer_capacity` exists for that reason and did not exist when the bug was found.
+
+## A test that passes while the bug in its own comment is present
+
+The test added for the overflow above, "survives out-parameter writes", passed with the bug
+reintroduced. It asserts that out-parameter writes do not disturb buffers, over eight buffers
+and four rounds, which sounds thorough and caught nothing: which allocation gets hit depends on
+where the allocator places the neighbour, and on this machine the buffer in the earliest test is
+the one that takes it.
+
+Prevention: a property test is not a guard until it has been seen to fail against the real
+defect. Reintroduce the bug and watch the named test go red, or state plainly in the comment
+that the guard is elsewhere, because a test whose comment claims a protection it does not give
+is worse than no test.
+
+## A null check silently turned a valid buffer into a zero result
+
+**Found and measured while designing the FFI boundary, before any of it is built.** A Goertzel
+function exported as `extern "C"` was called from Node with a pointer to offset 0 of the
+module's memory. It returned 0.0 where the same call at any other offset returned the correct
+power. The cause was in the guard:
+
+```rust
+if buf.is_null() { return 0.0; }   // address 0 is a real address
+```
+
+Address 0 is a legitimate location in a Wasm module's linear memory, so `is_null()` on a
+caller-supplied pointer is not a validity check. It converts "the start of memory" into "no
+data", and it returns a plausible number rather than failing, so the symptom is a wrong
+measurement rather than a crash.
+
+Prevention: the core allocates and hands out pointers, and a caller never invents an offset.
+Where there is state, pass an opaque handle rather than a bare pointer. Where a length is known,
+check it against what was allocated. A guard that returns a sensible default on bad input hides
+the bad input, and this one would have been read as a DSP bug.
+
+## The FFI call was written wrong twice before it worked
+
+The same experiment: calling `goertzel(ptr, len, hz)` from Node, I passed two arguments instead
+of three, then relied on a null guard to absorb the result. Both produced a number, neither
+produced an error, and both would have looked like a decoder that finds nothing in every file.
+
+This is the ordinary experience of a pointer API, and it is why `docs/ffi.md` puts the whole
+ergonomics layer in JavaScript: typed arrays instead of pointers, an object instead of new and
+free pairs, and `.d.ts` types over the raw exports so the call site is checked.
+
+Prevention: the raw boundary is for C++ and for the wrapper, and host code never calls it
+directly. A call site that has to remember an argument order is a call site that will get it
+wrong.
+
 ## A screenshot path is a build step
 
 A screenshot that nobody looks at until something looks wrong is a step that was broken for as long as nobody checked. In

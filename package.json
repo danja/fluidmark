@@ -1,0 +1,30 @@
+{
+  "name": "fluidmark",
+  "version": "0.1.0",
+  "description": "Watermarking for music: embed an identifier in a track and recover it from the marked file",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./node": "./src/node.js",
+    "./browser": "./src/browser.js"
+  },
+  "files": [
+    "src",
+    "bin"
+  ],
+  "scripts": {
+    "build": "node bin/build-wasm.js",
+    "test:core": "cargo test --release --manifest-path wasm/Cargo.toml",
+    "test:native": "node bin/check-native-link.js",
+    "test:js": "vitest run",
+    "test": "npm run build && npm run test:core && npm run test:native && npm run test:js"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}

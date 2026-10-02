@@ -18,8 +18,15 @@ Keep this short. An item here is something the work is waiting on.
       Say where it becomes audible rather than only whether.
 - [ ] **Decide the audibility criterion**, once there is something to measure: a level, a method, and the point at which
       it stops being acceptable. This is a judgement about people listening, not about samples.
+- [ ] **Try the VST plugin in a DAW.** Its core is testable headlessly, but whether it sits acceptably in a mastering
+      chain, whether the generated pattern is something you would keep as a bassline, and whether a parameter change moves
+      a note already sounding are questions only a DAW answers. Fluidmark is not a plugin toolchain, so nothing here is set
+      up to try one.
 
 ## 2. Tools that would help
+
+**A DAW**, for the same reason as the item above: the plugin has to be tried in one, and
+installing and configuring a host is a person's action.
 
 **A browser automation connection, needed for the front end.** For checking page layout, focus, pointer and viewport
 width, which no test suite can see: a DOM without a renderer has no layout, no pointer capture to fail, and no
@@ -37,5 +44,6 @@ filters are hot: a decode of a long file is the first thing that will be slow, a
 than guessing. `wasmtime` also gives a second runtime to check a memory-ownership bug against, since the browser and node
 disagree about what a detached view does.
 
-**An `ffmpeg` or `lame` binary, for the lossy round trip.** The reference shells out to LAME for its MP3 step. A real lossy
-codec is the interference that matters most for a watermark, and a stub encoder would pass a test that says nothing.
+**An `ffmpeg` or `lame` binary, for the lossy round trip.** Both are on this machine already, so this one may be struck.
+The reference shells out to LAME for its MP3 step, and a real lossy codec is the interference that matters most for a
+watermark, since a stub encoder would pass a test that says nothing.

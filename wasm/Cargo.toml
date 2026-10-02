@@ -1,0 +1,20 @@
+[package]
+name = "fluidmark-core"
+version = "0.1.0"
+edition = "2021"
+description = "The fluidmark watermark core: DSP and codec behind a C ABI"
+license = "GPL-3.0-or-later"
+
+[lib]
+# One source, three artifacts: a Wasm module for the browser and the Node tools, a static
+# library and a shared object for the C++ hosts. See docs/ffi.md.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+# A Rust panic must not cross into C++ or JavaScript. extern "C" aborts on unwind, and with
+# optimisation the caller is C++ that has no idea a Rust unwinder exists.
+panic = "abort"
+opt-level = 3
+lto = true
+
+[dependencies]

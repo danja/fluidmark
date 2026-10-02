@@ -14,28 +14,37 @@ There are three deliveries, in this order:
 1. **A first pass following WebBeeps' strategy**: a payload written as audible tones.
    `docs/port.md` covers it. It is a baseline that makes the plumbing and the tests real, and
    it is not the goal.
-2. **A VST plugin**, following the patterns of `~/github/downspout`, that takes text and
-   generates a repeated MIDI pattern derived from it, usable as a bassline or melody on a
-   dance track. A musical carrier rather than an audible overlay.
-3. **The steganographic layer**, which is the actual goal, and **native applications** that
+2. **The steganographic layer**, which is the actual goal, and **native applications** that
    embed and extract. `docs/steganography.md` holds the survey and the reasoning.
+3. **A VST plugin**, following the patterns of `~/github/downspout`, that takes text and
+   generates a repeated MIDI pattern derived from it, usable as a bassline or melody on a
+   dance track. Deferred to a later stage, and probably C++ with DPF.
+
+What is built now is Rust to Wasm, driven by a browser front end and Node tools. The plugin
+is the fourth host rather than the second, and nothing in the current work should assume it
+is coming soon.
 
 Keep five concerns separate: the payload and its encoding, the DSP, the carrier, the
-embedding and detection, and the hosts (browser, Node tools, VST plugin, native apps).
+embedding and detection, and the hosts (browser, Node tools, native apps, VST plugin).
 
 ```
-  www/ (browser)   bin/ (node)   vst/ (DPF plugin)   apps/ (native)
-         \              |               /                    /
-          \             |              /                    /
+  www/ (browser)   bin/ (node)   apps/ (native, later)   vst/ (DPF, later)
+         \              |              |                       /
+          \             |             |                      /
              src/              payload, codec, framing
-  ======================= | ======================= one codec, many hosts ====
-                wasm/ (rust)             DSP over sample arrays
-  ======================= | ======================= per-audio-block boundary
-                          audio I/O
+  ============================ | ============================ one codec ====
+                wasm/ (rust)                              the core: DSP
+  ============================ | ============================ per-audio-block
+                                   audio I/O
 ```
 
-One codec, many hosts. Every host drives the same code and none has a second implementation
-of it. A feature that works on the site and not in the plugin, or the reverse, is a defect.
+One codec. Every host drives the same code and none has a second implementation of it. A
+feature that works on the site and not in a tool, or the reverse, is a defect.
+
+**The core is Rust, behind a plain `extern "C"` ABI, emitting both a `staticlib` and Wasm from
+the same source.** The browser and the Node tools use the `.wasm`; the C++ hosts, which are the
+native applications and the plugin when it arrives, link the `.a` natively. No embedded Wasm
+runtime and no component model. `docs/ffi.md` is the contract and the reasoning.
 
 ## The two inboxes
 
@@ -71,8 +80,12 @@ there at all.
 - ES modules in JavaScript. Node 20 or later. npm. Scripts run from the repository root.
 - TypeScript only as `.d.ts` declaration files for public interfaces. No TypeScript build.
 - Vanilla JavaScript for structure, glue and orchestration. No framework.
-- Rust for anything that loops over samples. Compiled to `wasm32-unknown-unknown`.
+- Rust for anything that loops over samples. The core, one crate, built two ways: a `staticlib` for the C++ hosts
+  and a `wasm32-unknown-unknown` module for the browser and Node tools. `docs/ffi.md`.
+- Never let a panic cross the boundary. `panic = "abort"` in release, and errors return a code.
 - Vitest, with `tests/` mirroring `src/` exactly. Cover valid, invalid and failure cases.
+- C++ and CMake are for the later plugin and native stages, following `~/github/downspout`: a portable core with no
+  plugin-framework dependency, tested with CTest. Not in the current work.
 - Small modules with explicit dependencies and dependency injection rather than globals.
 - Every source file opens with a path comment, as `// src/codec/Ascii.js`, and every Rust file as `//! src/dsp/goertzel.rs`.
 - Comments describe intent where it is not obvious, or an unusual API. Not effects.
@@ -160,9 +173,10 @@ break by accident.
 
 ## VST plugin rules
 
-The plugin follows the patterns of `~/github/downspout`, which are worth reading before writing
-any of this: a portable C++ core with no plugin-framework dependency, a thin DPF wrapper, a
-custom NanoVG UI, and deterministic tests over the core that run without a DAW.
+The plugin is a later stage, and these are held for it rather than applied now. It will
+follow the patterns of `~/github/downspout`, which are worth reading before writing any of it:
+a portable C++ core with no plugin-framework dependency, a thin DPF wrapper, a custom NanoVG
+UI, and deterministic tests over the core that run without a DAW.
 
 - **The payload encoding is not the plugin's business.** The plugin's job is to take text and
   emit a musical event stream derived from it. Where that maps to pitches and timings is the
@@ -182,6 +196,9 @@ custom NanoVG UI, and deterministic tests over the core that run without a DAW.
   not deterministic.
 - **VST3 metadata follows downspout's normalisation** (creator `danja`, group `Downspout`),
   since these plugins are meant to sit alongside them.
+- **The core stays callable from C++**, which is already arranged: the plugin links
+  `libfluidmark_core.a` and calls the same `extern "C"` functions the browser calls, so nothing
+  in the plugin needs to know about Wasm. See `docs/ffi.md`.
 
 ## Interface rules
 
@@ -212,11 +229,10 @@ does not keep the servlet app. See `docs/web.md`.
 The native applications embed and extract. They are the delivery that works on a finished
 master without a DAW open, so they are where the system has to be trustworthy.
 
-- **One core, bound four ways.** The embed and detect logic is one library. The Node tools, the
-  browser, the VST plugin and the native apps all bind that same library. A native app
-  reimplementing detection is the single most expensive mistake available here, because its
-  results then differ from every other host's and nobody finds out until a mark fails to
-  verify.
+- **One core, every host.** The embed and detect logic is the Rust core, and the browser, the Node tools, the native
+  applications and the plugin all drive that same core rather than each having their own. A host reimplementing detection
+  is the single most expensive mistake available here, because its results then differ from every other host's and nobody
+  finds out until a mark fails to verify.
 - **Verify before claiming.** An extractor that returns a payload has found a candidate, not a
   verified mark. Say which, and say what the confidence was.
 - **The extractor takes a file a user chose.** It is untrusted input, it may be enormous, and
@@ -271,4 +287,6 @@ computes against.
 
 - `reference/WebBeep` is Danny Ayers' own earlier work, kept in the repository to port from. Reuse from it freely, and
   note in a commit when fluidmark's behaviour deliberately differs from it.
-- `docs/port.md` holds the reading taken of each ambiguous part of the reference.
+- `reference/perplexity-pointers.md` is the steganography survey, with ten papers and a recommended research path.
+- `docs/port.md` holds the reading taken of each ambiguous part of the reference. `docs/steganography.md` holds the carrier
+  reasoning and the attack list. `docs/web.md` holds the front end. `docs/initial-thoughts.md` is the original brief.

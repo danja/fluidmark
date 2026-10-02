@@ -6,6 +6,17 @@ an intention nothing acts on.
 
 ## Items
 
+- ~~**The one-core question**: Rust core against C++ core, and whether both can share one.~~ Decided, and the follow-up
+  question it raised is decided too. The core is Rust behind a plain `extern "C"` ABI, emitting a `staticlib` and a Wasm
+  module from one source: the browser and Node use the `.wasm`, the C++ hosts link the `.a`. No embedded Wasm runtime and no
+  component model. Verified on this machine before being recorded. Both are in `TODO.md` under "Decisions taken" and
+  `docs/ffi.md`.
+- [ ] **"No psychoacoustic effect" in the brief, read against `docs/steganography.md`.** The brief asks for a plugin that
+      does not alter what the music sounds like, while the survey's answer for an inaudible mark is per-band masking derived
+      from a psychoacoustic model. Those are the same goal stated two ways, but the second is a mechanism and the first
+      reads as a property. Worth settling whether the requirement is "inaudible to a listener" (measurable, and the survey's
+      approach gets there) or "applies no psychoacoustic processing" (a different and much weaker requirement, and one the
+      tone-overlay port already satisfies, which would make it a strange thing to ask for at the end).
 - [ ] **Reuse the genetic algorithm in `reference/WebBeep/go/` rather than rewriting the parameter search.** It already
       tunes around thirty encoder and decoder parameters against decode accuracy, and `notes/success.txt` records a run
       reaching accuracy 1.0. Every parameter it searched is a parameter this port will have too, so the search is reusable

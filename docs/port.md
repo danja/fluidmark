@@ -1,7 +1,12 @@
-# The first step: porting WebBeep, and where it stops being enough
+# Delivery 1: the first pass, and where it stops being enough
 
 WebBeep is watermarking by audible tone. This document says what it does, what a faithful
 port looks like, and why the port is not the finish line.
+
+This is delivery 1 of 3 in `docs/initial-thoughts.md`: the baseline that makes the plumbing,
+the codec and the attack harness real. Delivery 2 is the VST plugin (a MIDI carrier), and
+delivery 3 is the steganographic layer and the native applications, which are the goal and are
+in `docs/steganography.md`.
 
 ## What WebBeep does
 
@@ -78,6 +83,9 @@ Roughly in dependency order:
 | ASCII codec, checksum, punycode | JS | Cheap, and needs to be readable |
 | Chunker, cropper, pipeline | JS | Structure and ordering, not arithmetic |
 | Encode, decode, CLI tools | JS | Orchestration |
+
+The Rust crate emits a `staticlib` and a Wasm module from one source, so the C++ hosts link
+the same DSP the browser does. See `docs/ffi.md`.
 
 ## Where the port stops being enough
 
