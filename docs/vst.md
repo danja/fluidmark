@@ -189,6 +189,32 @@ Each ends with something that runs, and each is useful before the next.
    has them.
 7. **The listening check**, which is `HUMANS.md`'s and which decides the default margin the plugin ships with.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request: the core and page tests, the page in headless Chrome
+against the container, and the plugin on three platforms. Each plugin job builds the bundle, and `vst/scripts/package.sh`
+checks it and zips it as a downloadable artifact with a SHA-256.
+
+| Job | Runner | Tests run | Package check |
+|---|---|---|---|
+| Linux x86_64 | ubuntu-24.04 | CTest: engine (with allocation counting), wrapper, target selection | no unexpected shared libraries |
+| macOS universal | macos-15 | CTest on the arm64 slice; the allocation count is skipped (a Linux link hook) | both slices present; ad-hoc signature verifies |
+| Windows x86_64 | ubuntu-24.04, MinGW-w64 (posix threads) | none: the tests are host programs and there is no Wine | a PE DLL importing none of libgcc, libstdc++, libwinpthread |
+
+No job is `continue-on-error`; downspout's macOS and Windows jobs are, which would let a broken build show green.
+DPF is cloned at a pinned commit with submodules, and the Rust core is built per target by cmake (`vst/cmake/RustTargets.cmake`).
+
+**Not yet proven, in the order they are likely to bite** (none of this has run anywhere but Linux):
+
+1. The Rust `x86_64-pc-windows-gnu` staticlib may need system libraries beyond those listed in `vst/CMakeLists.txt`, which
+   will show as undefined symbols at link time.
+2. The MinGW toolchain: a wrong thread model, or a runtime DLL import the package check will refuse.
+3. DPF's own cmake on macOS and under a toolchain file, and its submodules (pugl).
+4. macOS deployment target 10.15 against C++20 library features; the arm64 slice is 11.0 whatever is asked.
+5. A Windows DLL that links is not a DLL that loads: no one has opened it in a host.
+6. Ad-hoc signing is not notarisation; Gatekeeper will quarantine a downloaded bundle.
+7. The MSVC path exists in CMake and is not exercised by anything.
+
 ## Decisions that are the user's
 
 These change what gets built, and are listed here rather than assumed.

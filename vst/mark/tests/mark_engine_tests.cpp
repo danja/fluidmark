@@ -3,8 +3,9 @@
 // The engine behind the Mark plugin, driven the way a host drives it and checked with the core's own reader,
 // with no DAW and no DPF. Plain checks in the style of wasm/tests/link_check.cpp.
 //
-// The allocation counts are real: the link line wraps malloc and friends, so allocations made by the Rust core
-// are counted along with this program's own. The count is thread-local, so only the audio thread's is read.
+// The allocation counts are real on Linux: the link line wraps malloc and friends, so allocations made by the Rust core
+// are counted along with this program's own. The count is thread-local, so only the audio thread's is read. Other
+// platforms have no such hook, and the check says it was skipped and does not pass.
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,7 @@
 
 static thread_local uint64_t gAllocations = 0;
 
+#ifdef FLUIDMARK_WRAP_ALLOC
 extern "C" {
 void* __real_malloc(size_t);
 void* __real_calloc(size_t, size_t);
@@ -32,6 +34,10 @@ void* __wrap_calloc(size_t a, size_t b) { ++gAllocations; return __real_calloc(a
 void* __wrap_realloc(void* p, size_t n) { ++gAllocations; return __real_realloc(p, n); }
 int __wrap_posix_memalign(void** p, size_t a, size_t n) { ++gAllocations; return __real_posix_memalign(p, a, n); }
 void* __wrap_aligned_alloc(size_t a, size_t n) { ++gAllocations; return __real_aligned_alloc(a, n); }
+}
+#endif  // FLUIDMARK_WRAP_ALLOC
+
+extern "C" {
 
 // The core's reader and framing, for checking what the engine wrote.
 float* core_buffer_new(uint32_t cap);
@@ -247,7 +253,12 @@ int main() {
                "the start of the audio reads as the first identifier");
         expect(readBack(all, all.left.size() - static_cast<std::size_t>(45.0 * kRate), all.left.size(), "k", frame) == 0 && startsWith(frame, frameFor(idB)),
                "the end reads as the second");
+#ifdef FLUIDMARK_WRAP_ALLOC
         expect(allocations == 0, "the audio thread allocated nothing, through the swap (" + std::to_string(allocations) + ")");
+#else
+        (void)allocations;
+        std::printf("  skip  the audio thread's allocations are not counted on this platform (no link-time malloc hook)\n");
+#endif
 
         // No click at the swap. What the engine adds is the mark, which is the output less the input delayed by the
         // latency. Its largest sample-to-sample change in the stretch where the old stream gives way to the new is no

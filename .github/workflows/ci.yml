@@ -1,0 +1,196 @@
+# .github/workflows/ci.yml
+#
+# Builds and tests the core, the page, and the Mark plugin on Linux, macOS and Windows.
+#
+# Shape follows ~/github/downspout's CI (a Linux build that is the reference, DPF's MinGW cross build for Windows, a
+# macOS universal build), with three differences that are deliberate:
+#
+#   * No job is `continue-on-error`. The macOS and Windows builds have never run on a real machine of their kind, and a
+#     red job is the signal that something in them is wrong; a green tick over a failed build would hide exactly that.
+#     `fail-fast` is off, so one platform failing does not cancel the others.
+#   * The Rust core is built by cmake with cargo for the right target (vst/CMakeLists.txt), which is why the Rust
+#     targets are added here and why DPF's own action, which runs `cmake .` at the repository root, is not used.
+#   * Every packaged bundle is checked before it is zipped (vst/scripts/package.sh): both macOS slices and an ad-hoc
+#     signature, no MinGW runtime DLLs in the Windows DLL.
+#
+# What is and is not run on each platform: docs/vst.md, "Continuous integration".
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # DPF at the commit that matches the copy downspout vendors, apart from downspout's one local patch (VST3 SysEx
+  # output, which this plugin does not use). Submodules matter: dgl/src/pugl-upstream is one.
+  DPF_REPO: DISTRHO/DPF
+  DPF_REF: 4238e1c7f0351bbe488d79f0899c540543ac7583
+
+jobs:
+  core:
+    name: Core and page tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ ffmpeg
+      - run: npm ci
+      # Builds the core, runs the Rust tests, the C++ link check, and the Vitest suite. Tests that need ffmpeg run
+      # because ffmpeg is installed; where a tool is missing they report skipped and do not pass.
+      - run: npm test
+
+  web-check:
+    name: The page in a real browser (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: npm ci
+      - name: Build the image and run it
+        run: |
+          docker build -t fluidmark:ci .
+          docker run -d --name fm -p 127.0.0.1:8080:8080 fluidmark:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/healthz && break; sleep 1; done
+      # Drives the real page in headless Chrome with real files: stereo, MP3, 24-bit, a wrong key, cancel.
+      - run: node www/browser-check.js http://127.0.0.1:8080
+        env:
+          CHROME: google-chrome
+
+  plugin-linux:
+    name: Plugin, Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DPF_REPO }}
+          ref: ${{ env.DPF_REF }}
+          path: dpf
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ pkg-config libdbus-1-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxext-dev libxrandr-dev libxrender-dev
+      - name: Configure
+        run: cmake -S vst -B build -DCMAKE_BUILD_TYPE=Release -DFLUIDMARK_DPF_DIR="$GITHUB_WORKSPACE/dpf"
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+      # The engine and the wrapper, with zero audio-thread allocations counted, and the Rust-target selection.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: vst/scripts/package.sh linux-x86_64 build/bin/fluidmark_mark.vst3 "$RUNNER_TEMP/dist" "ci-${{ github.run_number }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fluidmark-linux-x86_64-vst3
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  plugin-macos:
+    name: Plugin, macOS universal
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DPF_REPO }}
+          ref: ${{ env.DPF_REF }}
+          path: dpf
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      # Universal: cmake builds the core for both architectures with cargo and joins them with lipo, and compiles the
+      # plugin for both. The deployment target is downspout's, and the arm64 slice cannot go below 11.0 whatever this says.
+      - name: Configure
+        run: |
+          cmake -S vst -B build -DCMAKE_BUILD_TYPE=Release \
+            -DFLUIDMARK_DPF_DIR="$GITHUB_WORKSPACE/dpf" \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+      # The runner is Apple Silicon, so the arm64 slice runs. The allocation counter is a Linux link-time hook, so on
+      # this platform that one check reports skipped; every other engine check runs. The x86_64 slice is not run.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: vst/scripts/package.sh macos-universal build/bin/fluidmark_mark.vst3 "$RUNNER_TEMP/dist" "ci-${{ github.run_number }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fluidmark-macos-universal-vst3
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  plugin-windows:
+    name: Plugin, Windows x86_64 (MinGW cross build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DPF_REPO }}
+          ref: ${{ env.DPF_REF }}
+          path: dpf
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      # The POSIX-threads compilers by name: Ubuntu's default MinGW thread model has no std::thread or std::mutex.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake mingw-w64 binutils-mingw-w64-x86-64 \
+            gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix file zip
+          x86_64-w64-mingw32-g++-posix -v 2>&1 | grep -i 'thread model'
+      - name: Configure
+        run: |
+          cmake -S vst -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/vst/cmake/toolchains/mingw-x86_64.cmake" \
+            -DFLUIDMARK_DPF_DIR="$GITHUB_WORKSPACE/dpf" -DDPF_VST3_ARCHITECTURE=x86_64
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+      # Nothing here can run the DLL: there is no Wine, and the engine and wrapper tests are host programs. What is
+      # checked is that it is a Windows DLL and imports none of MinGW's runtime DLLs.
+      - name: Package
+        run: vst/scripts/package.sh windows-x86_64 build/bin/fluidmark_mark.vst3 "$RUNNER_TEMP/dist" "ci-${{ github.run_number }}"
+        env:
+          OBJDUMP: x86_64-w64-mingw32-objdump
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fluidmark-windows-x86_64-vst3
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14

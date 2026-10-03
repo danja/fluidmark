@@ -28,6 +28,13 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
 
 ## 1. Checks that need a person
 
+- [ ] **Push, and read the first CI run.** `.github/workflows/ci.yml` has never run. Expect the macOS and Windows jobs
+      to need a fix or two (see "Continuous integration" in `docs/vst.md`); paste the failing log and it can be
+      corrected. Then, with a real Mac and a real Windows machine, load the downloaded bundle in a DAW and say whether it
+      loads and marks (`node bin/mark.js --read` on a bounce). On macOS an ad-hoc-signed download is quarantined:
+      `xattr -dr com.apple.quarantine FluidMark.vst3`. Real distribution wants an Apple Developer ID and notarisation, and
+      a Windows code-signing certificate, which are yours to obtain.
+
 - [ ] **Try the Mark plugin in REAPER.** `./install.sh` and
       rescan. Put **FluidMark** last in the master chain, type an identifier in the plugin window (click the field, type,
       Tab to the key field), play, and bounce. Then `node bin/mark.js --in bounce.wav --read` (with `--key` if you gave

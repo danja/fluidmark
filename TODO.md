@@ -131,7 +131,7 @@ measured baseline.
 - [ ] **The speed search still loses 1% and 4% changes on a few tracks.** Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
       the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
-- [ ] **Non-repeating carriers**, so that a mark cannot be estimated from the audio and subtracted. The carrier is one
+- [ ] **Non-repeating carriers** (what it would take: `docs/removal-resistance.md`), so that a mark cannot be estimated from the audio and subtracted. The carrier is one
       waveform repeated every 2048 samples and its estimate is recoverable with no key. A keyed carrier that differs
       from block to block (a keyed stream, not a repeat) has nothing to stack, but the reader finds the boundary, the
       speed and the bit timing by folding the file onto one period, and would need another way to: correlating
@@ -185,7 +185,10 @@ deterministic tests that run without a DAW.
       `vst/scripts/ui-check.sh`. Not yet seen in a DAW.
 - [x] **A person loads it in REAPER**: done 2026-10-03. It loaded, a bounce read with `bin/mark.js --read`, and part of
       it was listened to with no artifacts noticed. A full listen, with the checks in `docs/how-it-works.md`, is open.
-- [ ] **6. Packaging and CI**, Linux first. macOS and Windows built and untested until someone has them.
+- [ ] **6. Packaging and CI.** `.github/workflows/ci.yml` and `vst/scripts/package.sh` are written (Linux, macOS universal,
+      Windows by MinGW cross build) and have **never run on GitHub**: the first push is the first test, and a red job is
+      expected to need fixing. The macOS and Windows bundles have not been loaded in a DAW. `docs/vst.md`, "Continuous
+      integration", lists the known risks. A release job (tags to a GitHub release) is not written.
 - [ ] **7. The listening check**, which decides the default margin the plugin ships with (`HUMANS.md`).
 - [x] **The mark at 88.2 and 96 kHz**: reads, and sits at the same modelled distance from the threshold (a Rust test and
       the engine's CTest). Whether the model's audibility predictions hold at 96 kHz is a listening question.
