@@ -7,6 +7,18 @@ Newest first within a theme. Some entries are lessons carried over from sibling 
 reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
 what would notice it happening.
 
+## A test read gitignored reference files and passed only on the one machine that had them
+
+**What happened.** The first CI run failed in `tests/mp3.test.js` with ENOENT on `reference/WebBeep/www/audio/`. The
+reference is gitignored, so a clean checkout does not have it; `tests/reference.test.js` skipped for that reason, but
+`mp3.test.js` read the directory unconditionally and three of its tests used a file from it.
+
+**Root cause.** Every run until then was on the one machine that has the reference. The suite was never run on a clean
+checkout, so "passes" meant "passes here".
+
+**Prevention.** Tests that need local material declare a skip (`describe.skipIf` / `it.skipIf`), so the run reports
+skipped and not green. Before trusting a suite, hide `reference/WebBeep` and run it: that is the CI environment.
+
 ## The script was cached for an hour, and the modules beside it were not
 
 **What happened.** `deploy/nginx.conf` revalidated the HTML, the modules under `/src/` and the Wasm, and cached everything

@@ -6,7 +6,7 @@
 // there; those tests are skipped, and reported as skipped, when it is not.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { readHeader, splitFrames } from '../src/mp3.js';
@@ -35,8 +35,11 @@ function encode({ rate, channels, bitrate = '128k', seconds = 3 }) {
   );
 }
 
-describe('the files the old service wrote', () => {
-  const files = readdirSync(AUDIO).filter((f) => f.endsWith('.mp3'));
+// The reference is local material (gitignored), so on a clean checkout, CI included, these report skipped.
+const haveAudio = existsSync(AUDIO);
+
+describe.skipIf(!haveAudio)('the files the old service wrote', () => {
+  const files = haveAudio ? readdirSync(AUDIO).filter((f) => f.endsWith('.mp3')) : [];
 
   it('has files to test against', () => {
     expect(files.length).toBeGreaterThan(3);
@@ -98,7 +101,7 @@ describe('files that are not what they claim', () => {
     expect(splitFrames(Uint8Array.from({ length: 5000 }, (_, i) => (i * 7919) & 0xff)).frames).toEqual([]);
   });
 
-  it('does not take a stray 0xFF in tag data for a frame', () => {
+  it.skipIf(!haveAudio)('does not take a stray 0xFF in tag data for a frame', () => {
     const good = new Uint8Array(readFileSync(`${AUDIO}dfgdfg.mp3`));
     const junk = Uint8Array.from({ length: 300 }, (_, i) => (i % 3 === 0 ? 0xff : 0xe0));
     const joined = new Uint8Array(junk.length + good.length);
@@ -109,7 +112,7 @@ describe('files that are not what they claim', () => {
     expect(found.frames.length).toBe(splitFrames(good).frames.length);
   });
 
-  it('skips an ID3v2 tag', () => {
+  it.skipIf(!haveAudio)('skips an ID3v2 tag', () => {
     const good = new Uint8Array(readFileSync(`${AUDIO}dfgdfg.mp3`));
     const tag = Uint8Array.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 20, ...new Array(20).fill(0xff)]);
     const joined = new Uint8Array(tag.length + good.length);
