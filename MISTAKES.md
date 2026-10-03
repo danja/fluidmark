@@ -7,6 +7,23 @@ Newest first within a theme. Some entries are lessons carried over from sibling 
 reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
 what would notice it happening.
 
+## The script was cached for an hour, and the modules beside it were not
+
+**What happened.** `deploy/nginx.conf` revalidated the HTML, the modules under `/src/` and the Wasm, and cached everything
+else in `www/` for an hour, on the reasoning that what was left was stylesheets and images. `app.js` was in what was
+left. After a deploy a browser would run the old `app.js` against new modules, which is a stale page that loads and
+then calls something that is not there, with nothing in any log. The browser check found it by accident: it keeps a
+Chrome profile between runs, an old `app.js` came out of that cache, and a new check failed with the old page's text.
+
+**Root cause.** A cache rule written for the file types I expected, not for what the page's code depends on. The
+deployment rules in `AGENTS.md` name exactly this failure ("a stale cached page against a new Wasm build") and I wrote
+the policy anyway without testing it.
+
+**Prevention.** `tests/web.test.js` parses the real nginx config, picks the location nginx would pick for each URL the
+page loads, and requires `no-cache` on every one; it fails with the script moved back under the cached rule, and it
+keeps a regex location from shadowing `/src/`. `bin/deploy.js` checks the headers on the running container. The rule is
+that anything the page's code depends on is revalidated, and the cached set is images only.
+
 ## One key measured the key, not the scheme
 
 **What happened.** Every spread-spectrum measurement used one key, the public default. Marking a stereo file with a

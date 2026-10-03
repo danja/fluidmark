@@ -56,7 +56,7 @@
         The noise is generated from a key. Without the key there is nothing to correlate against,
         so the mark cannot be found, and with it the reader recovers each bit by correlating the
         track against that noise, which averages away the music itself. The message is
-        error-corrected with a Hamming code, shuffled so that damage to one stretch of the file
+        error-corrected with a convolutional code, shuffled so that damage to one stretch of the file
         does not land on one stretch of the message, and repeated end to end for as long as the
         track lasts. The reader finds where a copy starts from a keyed marker, with no help,
         so a cropped or shifted file reads, then combines every copy it can find before deciding.
@@ -75,8 +75,8 @@
         22.05 kHz, a time shift, a crop, a fold to mono, one channel alone, and MP3 compression at
         128 and 64 kbit/s. It was lost to heavy noise, pink noise at 20 dB below the loudest
         sample. On other music the results differ a little, and the table is in the project
-        documentation. A track too short to hold one copy is refused: about 15 seconds for a few
-        characters of identifier and up to about 50 for the longest.
+        documentation. A track too short to hold one copy is refused: about 12 seconds for a few
+        characters of identifier, 26 for 22 characters and about a minute for 63.
       </p>
       <p>
         <strong>What has not.</strong> Nobody has yet confirmed by listening that the mark is
@@ -87,7 +87,8 @@
         determined person degrading it.
       </p>
       <p>
-        The marked file is written as a 16-bit WAV. A 24-bit master loses its bottom eight bits.
+        The marked file is written as a WAV at the same bit depth as the original, so a 24-bit
+        master stays 24-bit. An MP3 has no bit depth of its own and becomes a 16-bit WAV.
       </p>
 
       <h2>How a reader tells "no mark" from "a mark"</h2>

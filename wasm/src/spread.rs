@@ -12,7 +12,7 @@
 //! The stream, repeated end to end for as long as the track lasts:
 //!
 //! ```text
-//! [ sync: 32 keyed bits ][ header: 10 bytes, Hamming, interleaved ][ body: n bytes, same ]
+//! [ sync: 32 keyed bits ][ header: 10 bytes, convolutional code, interleaved ][ body: n bytes, same ]
 //! ```
 //!
 //! The header and body are the frame from `frame.rs`, so the magic number, the length and the
@@ -156,7 +156,7 @@ const K_BODY: u64 = 0xa54f_f53a_5f1d_36f1;
 
 /// Bits in one copy of the stream for a frame of `frame_bytes`.
 pub fn copy_bits(frame_bytes: usize) -> usize {
-    SYNC_BITS + ecc::BITS_PER_BYTE * frame_bytes
+    SYNC_BITS + ecc::coded_bits(HEADER_BYTES) + ecc::coded_bits(frame_bytes - HEADER_BYTES)
 }
 
 /// Samples at the mark's own rate that one copy occupies.
@@ -449,8 +449,9 @@ fn median(values: &mut [f64]) -> f64 {
 
 /// Read the stream's header and body out of combined soft values laid out as one copy.
 fn read_copy(soft: &[f32], key: u64) -> (Vec<u8>, usize) {
-    let header_bits = ecc::BITS_PER_BYTE * HEADER_BYTES;
-    let header = ecc::decode(&ecc::deinterleave(&soft[SYNC_BITS..SYNC_BITS + header_bits], key ^ K_HEADER));
+    let header_bits = ecc::coded_bits(HEADER_BYTES);
+    let header = ecc::decode(&ecc::deinterleave(&soft[SYNC_BITS..SYNC_BITS + header_bits], key ^ K_HEADER), HEADER_BYTES)
+        .unwrap_or_default();
     let length = if header.len() == HEADER_BYTES { u16::from_le_bytes([header[6], header[7]]) as usize } else { 0 };
     (header, length)
 }
@@ -645,6 +646,77 @@ fn estimate_speeds(at_rate: &[f32], key: u64) -> Vec<f64> {
     }
 }
 
+/// Try to read a frame from soft bit values, taking `start` to be where a copy begins.
+///
+/// Reads the header from that one copy, takes the frame's length from it, and so knows the period of
+/// the repeats and can combine every whole copy before reading again. `None` is for anything short of
+/// a header and a body that the frame's own magic and version accept.
+///
+/// The length is read twice, once from a single copy and once from the combination, and the second
+/// has to agree with the first: the period the copies were combined at came from the first, so a
+/// second that differs means the header was too damaged to say how long the frame is. That case once
+/// indexed past the end of the combined values and aborted the reader, which in Wasm is a trap and not
+/// an error.
+fn complete_candidate(soft: &[f32], start: usize, polarity: f32, key: u64) -> Option<(Status, Vec<u8>, usize)> {
+    let header_bits = ecc::coded_bits(HEADER_BYTES);
+    if start + SYNC_BITS + header_bits > soft.len() {
+        return None;
+    }
+    let single: Vec<f32> = soft[start..start + SYNC_BITS + header_bits].iter().map(|&z| z * polarity).collect();
+    let (header, length) = read_copy(&single, key);
+    if !header_is_plausible(&header) {
+        return None;
+    }
+
+    // The length is known, so the period of the repeats is, and every copy can be combined. That
+    // includes the partial ones at either end of what was read: a copy cut off by the end of the file
+    // or by a crop at the start still carries values for the part that is there, and a position the
+    // copy does not reach simply gets nothing from it. Counting only whole copies threw away most of a
+    // track that was only a little longer than one, which is exactly where the extra were needed.
+    let period = copy_bits(HEADER_BYTES + length);
+    let mut combined = vec![0.0f32; period];
+    let mut whole = 0usize;
+    let mut seen = 0usize;
+    let mut at = (start % period) as isize - period as isize;
+    while at < soft.len() as isize {
+        let from = at.max(0) as usize;
+        let to = ((at + period as isize).min(soft.len() as isize)).max(0) as usize;
+        if to > from {
+            let offset = (from as isize - at) as usize;
+            for (slot, &z) in combined[offset..].iter_mut().zip(&soft[from..to]) {
+                *slot += z * polarity;
+            }
+            seen += to - from;
+            if to - from == period {
+                whole += 1;
+            }
+        }
+        at += period as isize;
+    }
+    // The copy at `start` is always at least partly there, since its header was just read from it.
+    // A count of whole copies of zero is real and common for a short file; what is reported is how
+    // many copies' worth of values were combined, never less than one.
+    let copies = whole.max(seen / period).max(1);
+    // Position `i` of `combined` is position `i` of the copy: `start` modulo the period is where a
+    // copy begins in the soft values, and every addition above was aligned to it.
+    let (header, combined_length) = read_copy(&combined, key);
+    if !header_is_plausible(&header) || combined_length != length {
+        return None;
+    }
+    let body_start = SYNC_BITS + header_bits;
+    let body_bits = ecc::coded_bits(length);
+    let body = ecc::decode(&ecc::deinterleave(combined.get(body_start..body_start + body_bits)?, key ^ K_BODY), length)?;
+
+    let mut frame_bytes = header;
+    frame_bytes.extend_from_slice(&body);
+    let status = match frame::decode(&frame_bytes) {
+        Ok(_) => Status::Verified,
+        Err(FrameError::NoMark) | Err(FrameError::TooShort) => return None,
+        Err(_) => Status::Damaged,
+    };
+    Some((status, frame_bytes, copies))
+}
+
 /// Look for a mark in `samples`, recorded at `sample_rate`.
 ///
 /// Never trusts what it reads: a result is `Verified` only when the frame's magic, version,
@@ -727,7 +799,7 @@ fn detect_at_rate(at_rate: &[f32], key: u64) -> Detection {
         let dot: f64 = chunk.iter().zip(&reference).map(|(&a, &b)| a as f64 * b as f64).sum();
         soft.push((dot / (norm * ref_norm) * (CHIPS as f64).sqrt()) as f32);
     }
-    if soft.len() < SYNC_BITS + ecc::BITS_PER_BYTE * HEADER_BYTES {
+    if soft.len() < SYNC_BITS + ecc::coded_bits(HEADER_BYTES) {
         return Detection::none();
     }
 
@@ -756,58 +828,15 @@ fn detect_at_rate(at_rate: &[f32], key: u64) -> Detection {
 
     for &start in &candidates {
         let polarity = scores[start].signum() as f32;
-        let header_bits = ecc::BITS_PER_BYTE * HEADER_BYTES;
-        if start + SYNC_BITS + header_bits > soft.len() {
-            continue;
+        if let Some((status, frame_bytes, copies)) = complete_candidate(&soft, start, polarity, key) {
+            return Detection {
+                status,
+                frame: frame_bytes,
+                sync_sigmas: scores[start].abs() / sigma,
+                copies,
+                speed: 1.0,
+            };
         }
-        let single: Vec<f32> = soft[start..start + SYNC_BITS + header_bits].iter().map(|&z| z * polarity).collect();
-        let (header, length) = read_copy(&single, key);
-        if !header_is_plausible(&header) {
-            continue;
-        }
-
-        // The length is known, so the period of the repeats is: combine every whole copy.
-        let period = copy_bits(HEADER_BYTES + length);
-        let first = start % period;
-        let mut combined = vec![0.0f32; period];
-        let mut copies = 0usize;
-        let mut at = first;
-        while at + period <= soft.len() {
-            for (slot, &z) in combined.iter_mut().zip(&soft[at..at + period]) {
-                *slot += z * polarity;
-            }
-            copies += 1;
-            at += period;
-        }
-        // `start` itself may fall in a copy that was cut short at the end of the file. Then the
-        // header at `start` was read from a single copy and there is nothing to combine.
-        if copies == 0 {
-            continue;
-        }
-        // Rotate so the combined values begin at a sync word. `first` is where the first whole
-        // copy begins, and `start` is a multiple of `period` past it, so it already does.
-        let (header, length) = read_copy(&combined, key);
-        if !header_is_plausible(&header) {
-            continue;
-        }
-        let body_bits = ecc::BITS_PER_BYTE * length;
-        let body_start = SYNC_BITS + header_bits;
-        let body = ecc::decode(&ecc::deinterleave(&combined[body_start..body_start + body_bits], key ^ K_BODY));
-
-        let mut frame_bytes = header;
-        frame_bytes.extend_from_slice(&body);
-        let status = match frame::decode(&frame_bytes) {
-            Ok(_) => Status::Verified,
-            Err(FrameError::NoMark) | Err(FrameError::TooShort) => continue,
-            Err(_) => Status::Damaged,
-        };
-        return Detection {
-            status,
-            frame: frame_bytes,
-            sync_sigmas: scores[start].abs() / sigma,
-            copies,
-            speed: 1.0,
-        };
     }
     Detection::none()
 }
@@ -1091,6 +1120,21 @@ mod tests {
         assert!(track_speed(&out, KEY).is_none());
     }
 
+
+    #[test]
+    fn a_track_only_a_little_longer_than_one_copy_still_reads_after_a_crop() {
+        // 1.7 copies, then the first 5% cut off: no whole copy is left, only the tail of one and the
+        // head of the next. Counting whole copies only would find nothing; combining what is there
+        // reads it. This is the shape of a short clip, and it is where the repeats are needed most.
+        let host = music(seconds_needed() * 1.7, RATE, 21);
+        let out = embed(&host, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        let cropped = attack::crop(&out, (out.len() as f64 * 0.05) as usize, out.len());
+        let found = detect(&cropped, RATE, KEY).unwrap();
+        assert_eq!(found.status, Status::Verified, "{found:?}");
+        assert_eq!(found.frame, payload());
+        assert!(found.copies >= 1);
+    }
+
     #[test]
     fn a_gain_change_is_survived() {
         let (_, out) = marked(seconds_needed() * 2.2);
@@ -1340,5 +1384,57 @@ mod tests {
         let copy = planar.clone();
         assert_eq!(embed_planar_in_place(&mut planar, 2, &payload(), KEY, RATE, -20.0), Err(SpreadError::TooShort));
         assert_eq!(planar, copy);
+    }
+
+    /// Soft values for `copies` repeats of the stream for `frame`, with noise of the given size.
+    fn soft_stream(frame: &[u8], key: u64, copies: usize, noise: f32, seed: u64) -> Vec<f32> {
+        let one = stream(frame, key);
+        let mut state = seed | 1;
+        let mut out = Vec::new();
+        for _ in 0..copies {
+            for &bit in &one {
+                let n = ((splitmix64(&mut state) >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 2.0 * noise;
+                out.push(bit * 4.0 + n);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn completing_a_candidate_never_indexes_out_of_range_however_damaged_the_header() {
+        // The bug: a header damaged enough to say one length in a single copy and another once the
+        // copies were combined indexed past the end of the combined values and aborted the reader.
+        // This mixes copies of frames of different lengths and noise of every size, at every start
+        // near a copy boundary, and only asks that nothing panics and that an answer is consistent.
+        let frames: Vec<Vec<u8>> = [3usize, 22, 63, 1].iter().map(|&n| frame::encode(&vec![0x5a; n], 0)).collect();
+        let mut tried = 0;
+        for (i, a) in frames.iter().enumerate() {
+            for (j, b) in frames.iter().enumerate() {
+                for noise in [0.5f32, 4.0, 12.0, 40.0] {
+                    let mut soft = soft_stream(a, KEY, 2, noise, (i * 31 + j) as u64);
+                    soft.extend(soft_stream(b, KEY, 2, noise, (i * 17 + j + 5) as u64));
+                    for start in [0usize, 1, 7, copy_bits(a.len()) - 3, copy_bits(a.len()), copy_bits(a.len()) + 11] {
+                        for polarity in [1.0f32, -1.0] {
+                            if let Some((_, frame_bytes, copies)) = complete_candidate(&soft, start, polarity, KEY) {
+                                assert!(copies >= 1);
+                                assert!(frame_bytes.len() >= HEADER_BYTES);
+                            }
+                            tried += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(tried > 500);
+    }
+
+    #[test]
+    fn a_frame_in_clean_soft_values_completes_from_its_own_start() {
+        // The control for the test above: it would pass trivially if `complete_candidate` never
+        // returned anything.
+        let f = frame::encode(b"http://example.org/", 0);
+        let soft = soft_stream(&f, KEY, 3, 0.5, 9);
+        let (status, bytes, copies) = complete_candidate(&soft, 0, 1.0, KEY).expect("reads");
+        assert_eq!((status, bytes, copies), (Status::Verified, f, 3));
     }
 }

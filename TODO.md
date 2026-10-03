@@ -119,11 +119,13 @@ measured baseline.
       remaining thing it cannot find is the sample rate, which is told.
 - [x] **Forward error correction and interleaving**, at the level of Hamming(7,4) and a keyed permutation,
       with repeats soft-combined. A stronger code is its own item below.
-- [ ] **Widen the margin further.** After the sync fix the mark reads down to about -32 dB on a quiet
-      recording and nothing reads at -38 dB. Whether any of those levels is inaudible is unmeasured. Options
-      in order of cost: a stronger code than Hamming (convolutional with Viterbi, or LDPC), since near the edge
-      rows come back damaged at 1-3% bit errors, more chips per bit, and weighting bands by how clean the host is
-      there. Each is measured through the harness on real audio, at a fixed strength.
+- [ ] **Widen the margin further.** The floor is about -36 dB on both hosts, after a convolutional code and
+      combining partial copies. On the dynamic `loops` host what limits it is the sync and boundary stages, not the
+      code, so a longer sync word, or finding the copy period from the sync peaks across copies, is next. After that:
+      more chips per bit, and weighting bands by how clean the host is there. Each is measured through the harness
+      on real audio, at a fixed strength, against the table in `docs/steganography.md`.
+- [ ] **The speed search needs a cleaner mark than a straight read** (it loses speed changes at -32 dB where plain
+      reading still works). Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
       the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
 - [ ] **A removal attack for the spread scheme.** The scrub rows are LSB-only now. Keyless: notch the band,
@@ -134,10 +136,11 @@ measured baseline.
       redistributable). Tests run on `src/synth.js`, which is too easy. Find a few seconds each of dense,
       quiet, and bright material with a licence that permits redistribution, and run the suite on them.
 - [x] **A tool that embeds and reads the spread mark in a file.** `bin/mark.js`, default scheme spread, stereo.
-- [ ] **MP3 in the Node tools.** The page decodes MP3 with WebCodecs, and the tools read WAV only. Shelling out to
-      ffmpeg is what the harness does; a tool that does it for `mark.js` is small.
-- [ ] **Output at the input's bit depth.** A 24-bit master is written back 16-bit. The page and the tool say so,
-      and a mastering chain would not want it. Needs 24-bit and float writing, and a decision about dither.
+- [x] **Other formats in the Node tools**, through ffmpeg: `src/audio-node.js`, used by `bin/mark.js`. The page has its own
+      reader for MP3. FLAC, OGG and M4A in the page would need a decoder it does not have.
+- [x] **Output at the input's bit depth**: 16, 24 or float WAV keeps its depth, in the page and in `bin/mark.js`. An
+      MP3 or an ffmpeg-decoded file is written 16-bit. Writing 24-bit does not dither, since the source had no
+      more precision than that.
 - [x] **Lower peak memory**, from about 1.2 GB to 0.6 GB for six minutes of stereo: streaming embed, marking in
       place, no planar copy in JS. Reading could shed more (the whitened and band-limited copies).
 - [ ] **Test the page on a phone-sized memory budget**, with a long stereo file. Untested; a person on a phone.

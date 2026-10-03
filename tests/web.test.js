@@ -396,3 +396,53 @@ describe('a failure can be seen from where the button is', () => {
     }
   });
 });
+
+
+describe('what the front door caches', () => {
+  // A stale `app.js` against new modules is the failure the deployment rules name, and it happened:
+  // the script sat under the one-hour cache meant for images. These parse the real nginx config and
+  // ask what each URL the page loads would get, so the policy is a property of the file rather than
+  // of someone remembering it.
+  const conf = readFileSync(fileURLToPath(new URL('../deploy/nginx.conf', import.meta.url)), 'utf8');
+
+  /** Location blocks as { kind, pattern, body }, in file order. */
+  // One level of nested braces is allowed in a body, for `types { ... }`.
+  const locations = [...conf.matchAll(/location\s+(~\*|~|=|\^~)?\s*(\S+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)].map((m) => ({
+    kind: m[1] ?? 'prefix',
+    pattern: m[2],
+    body: m[3],
+  }));
+
+  /** The location nginx would pick, in its own order: exact, then regex in file order, then longest prefix. */
+  function pick(path) {
+    const exact = locations.find((l) => l.kind === '=' && l.pattern === path);
+    if (exact) return exact;
+    const regex = locations.find((l) => (l.kind === '~*' || l.kind === '~') && new RegExp(l.pattern, l.kind === '~*' ? 'i' : '').test(path));
+    const prefixes = locations.filter((l) => l.kind === 'prefix' || l.kind === '^~').filter((l) => path.startsWith(l.pattern));
+    const longest = prefixes.sort((a, b) => b.pattern.length - a.pattern.length)[0];
+    if (longest && longest.kind === '^~') return longest;
+    return regex ?? longest;
+  }
+
+  const cache = (path) => pick(path)?.body.match(/Cache-Control\s+"([^"]+)"/)?.[1];
+
+  it('revalidates the page, its script, its stylesheet and every module and the Wasm it loads', () => {
+    for (const path of ['/', '/index.html', '/spec.html', '/applications.html', '/app.js', '/style.css',
+      '/src/load-browser.js', '/src/spread.js', '/src/audio-browser.js', '/build/fluidmark_core.wasm']) {
+      expect(cache(path), `${path} is served with ${cache(path)}`).toMatch(/no-cache/);
+    }
+  });
+
+  it('serves the modules from where they are, not from the document root', () => {
+    // A regex location that also matched /src/x.js would pre-empt the alias and 404 it.
+    expect(pick('/src/frame.js').pattern).toBe('/src/');
+    expect(pick('/build/fluidmark_core.wasm').pattern).toBe('/build/fluidmark_core.wasm');
+  });
+
+  it('would catch the bug it was written for', () => {
+    // The control: with no rule for the script, it falls through to the cached catch-all.
+    const without = locations.filter((l) => !(l.kind === '~*'));
+    const fallback = without.filter((l) => l.kind === 'prefix' && '/app.js'.startsWith(l.pattern)).sort((a, b) => b.pattern.length - a.pattern.length)[0];
+    expect(fallback.body).toMatch(/max-age=3600/);
+  });
+});

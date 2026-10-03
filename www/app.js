@@ -13,7 +13,7 @@
 import { loadCore } from './src/load-browser.js';
 import { readAudioFile } from './src/audio-browser.js';
 import { mark as markTones, read as readTones, TONE_RATE } from './src/mark.js';
-import { encodeWav, encodeWavChannels } from './src/wav.js';
+import { encodeWav, encodeWavChannels, outputBitsFor } from './src/wav.js';
 import * as spread from './src/spread.js';
 
 const $ = (id) => document.getElementById(id);
@@ -176,14 +176,17 @@ els.markButton.addEventListener('click', async () => {
       const marked = spread.embed(codec, audio.channelData, bytes, { key, sampleRate: audio.sampleRate });
       await breathe();
 
-      wavBytes = encodeWavChannels(marked, audio.sampleRate);
+      // A WAV keeps its own depth, so marking a 24-bit master does not cut it to 16. An MP3 has no
+      // depth to keep and is written 16-bit.
+      const bits = audio.kind === 'wav' ? outputBitsFor(audio) : 16;
+      wavBytes = encodeWavChannels(marked, audio.sampleRate, { bits });
       name = `${file.name.replace(/\.[^.]+$/, '')}-marked.wav`;
       const copies = Math.floor(audio.frames / needed);
       detail =
         `${audio.sampleRate} Hz, ${plural(audio.channels, 'channel')}, ${clock(audio.frames / audio.sampleRate)}. ` +
         `${plural(copies, 'copy')} of the mark${copies > 1 ? ', which is what lets it survive damage' : ''}. ` +
         `${els.key.value.trim() ? 'Made with your key.' : 'Made with the public default key, so anyone can read it.'} ` +
-        `Written as a 16-bit WAV${audio.bitsPerSample && audio.bitsPerSample !== 16 ? ` (the original was ${audio.bitsPerSample}-bit)` : ''}.`;
+        `Written as a ${bits === 32 ? '32-bit float' : `${bits}-bit`} WAV${audio.kind === 'mp3' ? ' (an MP3 has no bit depth of its own)' : ''}.`;
     }
 
     if (els.markDownload.href.startsWith('blob:')) URL.revokeObjectURL(els.markDownload.href);

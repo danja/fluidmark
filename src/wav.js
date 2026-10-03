@@ -150,7 +150,7 @@ export const MAX_CHANNELS = 8;
  * to eight channels. Anything else is refused by name rather than half-read.
  *
  * @returns {{channelData: Float32Array[], sampleRate: number, channels: number,
- *            bitsPerSample: number, frames: number}}
+ *            bitsPerSample: number, frames: number, floatSamples: boolean}}
  */
 export function decodeWavChannels(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -228,25 +228,35 @@ export function decodeWavChannels(bytes) {
       o += width;
     }
   }
-  return { channelData, sampleRate, channels, bitsPerSample, frames };
+  return { channelData, sampleRate, channels, bitsPerSample, frames, floatSamples: format === FORMAT_FLOAT };
 }
 
 /**
- * Channels as a 16-bit PCM WAV, interleaved, clipping rather than wrapping.
+ * Channels as an interleaved WAV, clipping rather than wrapping.
  *
- * Always 16-bit, whatever the source was. A 24-bit master comes back 16-bit, which loses its
- * bottom eight bits and is the one thing here a person might not expect; the page says so.
+ * `bits` is 16 or 24 for integer PCM, or 32 for 32-bit float. The default is 16, which is what an
+ * MP3 or a browser-decoded file should become. A caller that has a file's own depth, from
+ * `decodeWavChannels`, passes it, so that marking a 24-bit master does not quietly cut it to 16:
+ * float input is written as float, and 8 or 32-bit integer input as 16 and 24 respectively would be
+ * a guess, so those are asked for explicitly.
+ *
+ * 24-bit uses a plain `WAVE_FORMAT_PCM` header, which every reader this project has met accepts,
+ * rather than the extensible form the spec asks for above 16 bits.
  */
-export function encodeWavChannels(channelData, sampleRate) {
+export function encodeWavChannels(channelData, sampleRate, { bits = 16 } = {}) {
   const channels = channelData.length;
   if (channels < 1 || channels > MAX_CHANNELS) {
     throw new Error(`${channels} channels: this writes 1 to ${MAX_CHANNELS}`);
+  }
+  if (bits !== 16 && bits !== 24 && bits !== 32) {
+    throw new Error(`${bits}-bit output: this writes 16, 24 or 32 (float)`);
   }
   const frames = channelData[0].length;
   if (channelData.some((c) => c.length !== frames)) {
     throw new Error('the channels are not the same length');
   }
-  const dataBytes = frames * channels * 2;
+  const width = bits / 8;
+  const dataBytes = frames * channels * width;
   if (dataBytes > 0xffffffff - 36) throw new Error('too large for a WAV file');
   const buffer = new ArrayBuffer(44 + dataBytes);
   const view = new DataView(buffer);
@@ -264,20 +274,38 @@ export function encodeWavChannels(channelData, sampleRate) {
   u32(WAVE);
   u32(FMT);
   u32(16);
-  u16(FORMAT_PCM);
+  u16(bits === 32 ? FORMAT_FLOAT : FORMAT_PCM);
   u16(channels);
   u32(sampleRate);
-  u32(sampleRate * channels * 2);
-  u16(channels * 2);
-  u16(16);
+  u32(sampleRate * channels * width);
+  u16(channels * width);
+  u16(bits);
   u32(DATA);
   u32(dataBytes);
   for (let i = 0; i < frames; i += 1) {
     for (let c = 0; c < channels; c += 1) {
-      const clamped = Math.max(-1, Math.min(1, channelData[c][i]));
-      view.setInt16(at, Math.round(clamped * 32767), true);
-      at += 2;
+      const v = channelData[c][i];
+      if (bits === 32) {
+        view.setFloat32(at, v, true);
+      } else if (bits === 24) {
+        const q = Math.round(Math.max(-1, Math.min(1, v)) * 8388607);
+        view.setUint8(at, q & 0xff);
+        view.setUint8(at + 1, (q >> 8) & 0xff);
+        view.setUint8(at + 2, (q >> 16) & 0xff);
+      } else {
+        view.setInt16(at, Math.round(Math.max(-1, Math.min(1, v)) * 32767), true);
+      }
+      at += width;
     }
   }
   return new Uint8Array(buffer);
+}
+
+/**
+ * The output depth that keeps a file's own: 24 for 24-bit, 32 (float) for float, and 16 for everything
+ * else, including formats that were never PCM in the first place.
+ */
+export function outputBitsFor(decoded) {
+  if (decoded.floatSamples) return 32;
+  return decoded.bitsPerSample === 24 ? 24 : 16;
 }

@@ -15,7 +15,8 @@ import { loadCore } from '../src/load-node.js';
 import { mark, read } from '../src/mark.js';
 import * as spread from '../src/spread.js';
 import { keyFromText } from '../src/spread.js';
-import { decodeWav, decodeWavChannels, encodeWav, encodeWavChannels } from '../src/wav.js';
+import { readAudioFile } from '../src/audio-node.js';
+import { decodeWav, encodeWav, encodeWavChannels, outputBitsFor } from '../src/wav.js';
 
 /** Parse `--flag value` and `--flag` pairs. */
 export function parseArgs(argv) {
@@ -41,8 +42,10 @@ const USAGE = `usage:
   node bin/mark.js --in track.wav --payload "text" --out marked.wav [--key phrase] [--scheme spread|tones]
   node bin/mark.js --in marked.wav --read [--key phrase] [--scheme spread|tones]
 
-The default scheme is spread: a watermark hidden under the music, for a WAV of one to eight channels, 8 to 32 bit,
-written back as 16-bit with the channels kept. It needs a track of about 15 to 50 seconds depending on the payload,
+The default scheme is spread: a watermark hidden under the music, for a file of one to eight channels, written
+back as a WAV with the channels kept and the input's bit depth (16 or 24 integer, or float; anything else becomes
+16, or --bits 16|24|32 chooses). A WAV is read directly; MP3, FLAC, OGG, M4A and the rest are read
+through ffmpeg, which has to be installed. It needs a track of about 12 to 60 seconds depending on the payload,
 and says how long when it is too short. --key is a phrase; the same phrase is needed to read the mark back, and
 without one the public default key is used, which anyone can use.
 
@@ -78,15 +81,16 @@ export async function main(argv) {
 
   const core = await loadCore();
   try {
-    const bytes = new Uint8Array(await readFile(args.in));
-    return scheme === 'spread' ? await spreadMain(core, args, bytes) : await tonesMain(core, args, bytes);
+    return scheme === 'spread'
+      ? await spreadMain(core, args)
+      : await tonesMain(core, args, new Uint8Array(await readFile(args.in)));
   } finally {
     core.destroy();
   }
 }
 
-async function spreadMain(core, args, bytes) {
-  const wav = decodeWavChannels(bytes);
+async function spreadMain(core, args) {
+  const wav = await readAudioFile(args.in);
   const key = keyFromText(args.key === true ? '' : args.key);
 
   if (args.read) {
@@ -107,15 +111,20 @@ async function spreadMain(core, args, bytes) {
 
   const payload = new TextEncoder().encode(String(args.payload));
   const marked = spread.embed(core, wav.channelData, payload, { key, sampleRate: wav.sampleRate });
-  await writeFile(args.out, encodeWavChannels(marked, wav.sampleRate));
+  // A WAV keeps its own depth: marking a 24-bit master must not cut it to 16. Anything ffmpeg decoded
+  // comes back as float, which says nothing about the depth it came from, so it is written 16-bit.
+  const bits = args.bits ? Number(args.bits) : wav.kind === 'wav' ? outputBitsFor(wav) : 16;
+  await writeFile(args.out, encodeWavChannels(marked, wav.sampleRate, { bits }));
   const seconds = (wav.frames / wav.sampleRate).toFixed(1);
   const copies = Math.floor(wav.frames / spread.minSamples(core, payload.length, wav.sampleRate));
   process.stdout.write(
     `marked ${wav.channels} channel${wav.channels === 1 ? '' : 's'}, ${wav.sampleRate} Hz, ${seconds} s, ` +
       `${copies} cop${copies === 1 ? 'y' : 'ies'} of the mark -> ${args.out}\n`,
   );
-  if (wav.bitsPerSample !== 16) {
-    process.stdout.write(`note: the input was ${wav.bitsPerSample}-bit and the output is 16-bit\n`);
+  if (wav.kind === 'ffmpeg') {
+    process.stdout.write(`note: the input was decoded by ffmpeg and the output is a ${bits}-bit WAV, not the original format\n`);
+  } else if (!wav.floatSamples && wav.bitsPerSample !== bits) {
+    process.stdout.write(`note: the input was ${wav.bitsPerSample}-bit and the output is ${bits}-bit\n`);
   }
   return 0;
 }

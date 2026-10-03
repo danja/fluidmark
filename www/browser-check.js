@@ -228,10 +228,10 @@ async function main() {
     const click = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
 
     mkdirSync('/tmp/fluidmark-check', { recursive: true });
-    // 14 s of stereo with different left and right, at 44.1 kHz. Long enough for one copy of a
+    // 18 s of stereo with different left and right, at 44.1 kHz. Long enough for one copy of a
     // short identifier, short enough to be quick. Not music, but not a tone either.
     const stereoWav = '/tmp/fluidmark-check/stereo.wav';
-    writeFileSync(stereoWav, encodeWavChannels([synthTrack(14, 44100, 31), synthTrack(14, 44100, 32)], 44100));
+    writeFileSync(stereoWav, encodeWavChannels([synthTrack(18, 44100, 31), synthTrack(18, 44100, 32)], 44100));
     const shortWav = '/tmp/fluidmark-check/short.wav';
     writeFileSync(shortWav, encodeWavChannels([synthTrack(3, 44100, 33), synthTrack(3, 44100, 34)], 44100));
     const flac = '/tmp/fluidmark-check/not-supported.flac';
@@ -336,6 +336,18 @@ async function main() {
       }
     } else {
       process.stdout.write('  skip  a stereo MP3 is decoded and marked (ffmpeg is not installed)\n');
+    }
+
+    // 6b. A 24-bit master stays 24-bit, rather than being cut to 16 on its way through the page.
+    const wav24 = '/tmp/fluidmark-check/stereo24.wav';
+    writeFileSync(wav24, encodeWavChannels([synthTrack(18, 44100, 41), synthTrack(18, 44100, 42)], 44100, { bits: 24 }));
+    await setValue('payload', 'urn:x:1');
+    await setFile('#source', wav24);
+    await evaluate('document.getElementById("mark-result").hidden = true');
+    await click('mark-button');
+    if (await until('!document.getElementById("mark-result").hidden', 'a 24-bit stereo WAV is marked')) {
+      const bits = await evaluate(`(async () => { const b = new Uint8Array(await (await fetch(document.getElementById('mark-download').href)).arrayBuffer()); return new DataView(b.buffer).getUint16(34, true); })()`);
+      check(bits === 24, `and written back 24-bit (${bits}; ${await evaluate('document.getElementById("mark-detail").textContent')})`);
     }
 
     // 7. The tone scheme needs no music file and says it is not using one.

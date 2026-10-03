@@ -200,11 +200,11 @@ it. `node bin/attack.js --scheme spread` runs it through the same list as the co
 **How it works.** A keyed white carrier, band-limited to 250 Hz - 8 kHz, 2048 samples long at 44.1 kHz,
 is multiplied by +1 or -1 for each channel bit and added to the host at a level that follows the host's
 own level in that band. The same stream (32 keyed sync bits, then the frame's header and body, each
-Hamming(7,4) coded and keyed-interleaved) repeats end to end for as long as the track lasts. The
+convolutionally coded and keyed-interleaved) repeats end to end for as long as the track lasts. The
 reader whitens the audio with an LPC filter fitted to the file, finds the bit boundary by folding the
 file onto one carrier period and summing circular cross-correlations (so a crop or time shift costs
 nothing), correlates each block with the carrier for a soft value, finds the copy boundary from the
-sync word, then soft-combines every whole copy before the Hamming decode. A file at another sample
+sync word, then soft-combines every copy, partial ones included, before the Viterbi decode. A file at another sample
 rate is resampled to 44.1 kHz first, and the rate has to be told to the reader: it is the one thing
 the reader cannot find blind.
 
@@ -220,16 +220,17 @@ Hosts were real audio, because the first run was not. On the synthetic track fro
 (harmonic notes and a little noise) the scheme survived 21 of 22 rows including both removal rows,
 which would have been a very good result if the host had been any good. It was not: tones occupy a
 few bins and leave the rest of the band nearly empty, so any mark in that band is easy to read. Real
-audio is denser, and the same scheme dropped to 17 and 19 of 20.
+audio is denser, and the same scheme dropped to 17 and 19 of 20 (it is 17 and 20 of 20 now, after
+the changes below).
 
 | Host | Length | Level |
 |---|---|---|
 | `loops`: eight drum and instrument loops from Sonic Pi's sample set, joined | 46.6 s | mean -16 dBFS, peak 0 dBFS |
 | `round60`: a minute of a long personal recording, local only and not in the repository | 60 s | mean -34 dBFS, peak -17 dBFS |
 
-44.1 kHz mono, 22-byte payload (32-byte frame), mark at -20 dB relative to the host in band. Two to
-three copies of the stream fit. These tables were measured after the sync fix described below,
-with key 2, which is one of the keys the bug made unreadable. Every row that reads is a bit error rate of 0.0%, so only the
+44.1 kHz mono, 22-byte payload (32-byte frame), mark at -20 dB relative to the host in band. Between one and two
+and a half copies of the stream fit. These tables were measured with key 2, one of the keys the sync
+bug described below made unreadable, after that fix and after the coding changes below. Every row that reads is a bit error rate of 0.0%, so only the
 outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
 
 | Attack | `loops` | `round60` |
@@ -238,19 +239,16 @@ outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
 | unmarked track (control) | none, correct | none, correct |
 | gain -6 / -0.5 / +3 dB | read | read |
 | dither 48 / 36 dB SNR | read | read |
-| white noise 30 dB SNR | read | read |
+| white noise 30 dB SNR | **lost** (damaged) | read |
 | white noise 20 dB SNR | **lost** | read |
-| pink noise 30 dB SNR | **lost** | read |
-| pink noise 20 dB SNR | **lost** | **lost** |
+| pink noise 30 dB SNR | read | read |
+| pink noise 20 dB SNR | **lost** | read |
 | low-pass 5 kHz / 1 kHz | read | read |
-| high-pass 200 Hz | read | read |
-| high-pass 2 kHz | read | read |
-| resample to 48 kHz | read | read |
-| resample to 22.05 kHz | read | read |
+| high-pass 200 Hz / 2 kHz | read | read |
+| resample to 48 kHz / 22.05 kHz | read | read |
 | time shift 1000 samples | read | read |
 | crop first 5% | read | read |
-| mp3 128k | read | read |
-| mp3 64k | read | read |
+| mp3 128k / 64k | read | read |
 
 The bar set above is met: `resample to 48 kHz` and `mp3 64k` both beat 50%, by being read exactly,
 on both hosts. The noise rows are SNR against the host's peak, so "20 dB" is noise ten times quieter
@@ -277,23 +275,59 @@ not the stereo:
   lowering it adds work, not false positives. `every_key_reads_its_own_mark_not_only_the_lucky_ones` and
   a test that the threshold stays well under the ceiling guard it, and both go red with the old value.
 
-Strength sweep after the fix, same hosts, same list, key 2 (rows of 20, the control included):
+Strength sweep after the fix, same hosts, same list, key 2. The list is now 32 rows, the 20 of the brief
+and 12 beyond it (speed, harsher filters and MP3, collusion), so the counts are of 32:
 
 | Mark level | `loops` | `round60` |
 |---|---|---|
-| -20 dB | 17 of 20 | 19 of 20 |
-| -26 dB | 13 of 20 | 18 of 20 |
-| -32 dB | 9 of 20 | 14 of 20 |
-| -38 dB | 0 of 20 | 0 of 20 |
+| -20 dB | 29 of 32 | 31 of 32 |
+| -26 dB | 24 of 32 | 30 of 32 |
+| -32 dB | 20 of 32 | 22 of 32 |
+| -35 dB | 16 of 32 | 18 of 32 |
+| -38 dB | 0 of 32 | 4 of 32 |
+| -41 dB | 0 of 32 | 0 of 32 |
 
-The cliff is still there but it is at about -35 dB, not -23, and well below it the loss is gradual:
-at -32 dB on the quiet recording the untouched file and every mild attack still read, and the rows that
-fail are the noise ones, a 1 kHz low-pass and a 2 kHz high-pass. At -38 dB nothing reads, not even the
-untouched file. Near the edge a few rows come back `damaged` with 1 to 3 percent of bits wrong, which
-is the Hamming code running out: a stronger code would turn some of those into reads.
+The cliff is still there but it is at about -36 dB, not -23, and above it the loss is gradual. At -35 dB
+the untouched file and the mild attacks still read, and what goes first is noise, narrow filtering and,
+because the speed estimate needs a cleaner peak than a straight read does, speed changes. Below -38 dB
+nothing reads, not even the untouched file.
 
 The point of the sweep is that the level the scheme needs is lower than first thought, which matters
 because the level that is inaudible is a listening question and may well be lower than -20 dB.
+
+### The code, and using every copy
+
+Two changes took the floor from about -32 dB to about -36 dB, and each was compared against what it replaced
+on the same hosts and the same list.
+
+**A convolutional code in place of Hamming(7,4).** Rate 1/2, constraint length 7 (generators 171 and 133 octal),
+decoded by the Viterbi algorithm from the soft values, with a six-bit tail to end in the zero state. Hamming
+corrects one wrong bit in seven and has no memory; this spreads every bit over the next six, so a short burst
+of weak bits is corrected from its neighbours. It costs about 14% more channel bits, so a copy is longer (26 s
+for a 22-byte identifier, where it was 22). Same hosts and rows, Hamming against convolutional:
+
+| Mark level | `loops` | `round60` |
+|---|---|---|
+| -26 dB | 22 against 21 | 29 against 30 |
+| -32 dB | 12 against 12 | 18 against 21 |
+| -35 dB | 0 against 0 | 1 against 18 |
+| -38 dB | 0 against 0 | 0 against 4 |
+
+On the quiet recording that is about 3 dB. On the dynamic loops it is nothing, because what limits `loops` is not
+the code: the sync and boundary stages fail first there. The code stays, since it is better where the code is the
+limit and no worse where it is not, and the cost is a longer copy.
+
+**Combining partial copies.** The reader used to combine only whole copies of the stream, and a track that is
+only a little longer than one copy has almost none: a cropped 46-second track with 26-second copies has no whole
+copy at all, and the longer code had made that worse. It now adds in every copy, including the part of one cut
+off by the end of the file or by a crop, each position getting what the copies that reach it have. More copies
+combined is not more false positives, since the frame's checks still decide. On `loops`, the short one: 12 of 32
+became 20 at -32 dB and 0 became 16 at -35 dB, with nothing lost on the longer recording.
+
+**A bug the first sweep found.** At -32 dB on `loops` the reader aborted, which in Wasm is a trap and not an error.
+The header read from one copy and the header read from the combination of copies could disagree about the frame's
+length, and the second was used to slice a buffer sized by the first. The two have to agree now, a fuzz test
+mixes frames of different lengths and noise of every size through that step, and it fails on the old code.
 
 ### Stereo
 

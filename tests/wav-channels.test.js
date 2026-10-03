@@ -5,7 +5,7 @@
 // hit, built byte by byte rather than by the writer under test.
 
 import { describe, expect, it } from 'vitest';
-import { decodeWav, decodeWavChannels, encodeWavChannels, MAX_CHANNELS } from '../src/wav.js';
+import { decodeWav, decodeWavChannels, encodeWavChannels, MAX_CHANNELS, outputBitsFor } from '../src/wav.js';
 
 /** A WAV built by hand, so the reader is not tested against its own writer. */
 function wav({ format = 1, channels = 2, rate = 44100, bits = 16, frames = [[0, 0]], extensible = false, extraChunk = false }) {
@@ -126,5 +126,44 @@ describe('encodeWavChannels', () => {
     const out = decodeWav(encodeWavChannels([Float32Array.of(0.25, -0.25)], 22050));
     expect(out.sampleRate).toBe(22050);
     expect(out.samples.length).toBe(2);
+  });
+});
+
+
+describe('output depth', () => {
+  const signal = [Float32Array.from({ length: 300 }, (_, i) => Math.sin(i / 5) * 0.9), Float32Array.from({ length: 300 }, (_, i) => Math.cos(i / 9) * 0.5)];
+
+  it('round trips 24-bit to far better than 16-bit can', () => {
+    const back = decodeWavChannels(encodeWavChannels(signal, 48000, { bits: 24 }));
+    expect(back.bitsPerSample).toBe(24);
+    for (let i = 0; i < 300; i += 1) {
+      expect(Math.abs(back.channelData[0][i] - signal[0][i])).toBeLessThan(2 / 8388608);
+    }
+    const sixteen = decodeWavChannels(encodeWavChannels(signal, 48000));
+    const err = (b) => Math.max(...signal[0].map((v, i) => Math.abs(b.channelData[0][i] - v)));
+    expect(err(back)).toBeLessThan(err(sixteen) / 50);
+  });
+
+  it('round trips 32-bit float exactly', () => {
+    const back = decodeWavChannels(encodeWavChannels(signal, 48000, { bits: 32 }));
+    expect(back.floatSamples).toBe(true);
+    expect(Array.from(back.channelData[1])).toEqual(Array.from(signal[1]));
+  });
+
+  it('writes negative 24-bit samples correctly', () => {
+    const back = decodeWavChannels(encodeWavChannels([Float32Array.of(-1, -0.5, 0, 0.5, 1)], 8000, { bits: 24 }));
+    expect(Array.from(back.channelData[0]).map((v) => Math.round(v * 1000) / 1000)).toEqual([-1, -0.5, 0, 0.5, 1]);
+  });
+
+  it('refuses a depth it does not write', () => {
+    expect(() => encodeWavChannels(signal, 48000, { bits: 12 })).toThrow(/16, 24 or 32/);
+  });
+
+  it('keeps a 24-bit or float source at its depth, and everything else at 16', () => {
+    expect(outputBitsFor({ bitsPerSample: 24, floatSamples: false })).toBe(24);
+    expect(outputBitsFor({ bitsPerSample: 32, floatSamples: true })).toBe(32);
+    expect(outputBitsFor({ bitsPerSample: 16, floatSamples: false })).toBe(16);
+    expect(outputBitsFor({ bitsPerSample: 8, floatSamples: false })).toBe(16);
+    expect(outputBitsFor({ bitsPerSample: null, floatSamples: undefined })).toBe(16);
   });
 });

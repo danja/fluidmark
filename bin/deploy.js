@@ -48,6 +48,12 @@ function probe(url) {
   return out ?? '000 ';
 }
 
+/** The Cache-Control header of a URL, lower-cased, or an empty string. */
+function cacheControl(url) {
+  const out = run('curl', ['-sI', '-m', '5', url], { quiet: true, allowFail: true }) ?? '';
+  return out.split('\n').find((line) => /^cache-control:/i.test(line))?.toLowerCase() ?? '';
+}
+
 /** What a healthy container answers, as [path, expected status and type prefix]. */
 const CHECKS = [
   ['/healthz', '200 text/plain'],
@@ -64,6 +70,13 @@ function healthy(port) {
     run('sleep', ['0.5'], { quiet: true });
   }
   const failures = [];
+  // What the browser is told to keep. A cached script against new modules is a stale page with no
+  // error anywhere, so every file the page's code depends on has to be revalidated.
+  for (const path of ['/', '/app.js', '/style.css', '/src/load-browser.js', '/build/fluidmark_core.wasm']) {
+    if (!cacheControl(`http://127.0.0.1:${port}${path}`).includes('no-cache')) {
+      failures.push(`${path}: is not served no-cache, so a browser could run a stale copy after a deploy`);
+    }
+  }
   for (const [path, expected] of CHECKS) {
     const got = probe(`http://127.0.0.1:${port}${path}`);
     if (!got.startsWith(expected)) failures.push(`${path}: wanted "${expected}", got "${got}"`);
