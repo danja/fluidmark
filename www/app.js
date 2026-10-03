@@ -241,7 +241,13 @@ els.readButton.addEventListener('click', async () => {
     await breathe();
     if (w.ok) {
       const text = new TextDecoder().decode(w.payload);
-      showResult({ text, detail: `Found by the watermark reader. ${shape}. The checksum matched.` });
+      // A file played slower or faster than it was marked is read by correcting for it, and a
+      // person who is told it was is better placed than one who thinks it was untouched.
+      const drift = (w.speed - 1) * 100;
+      const speedNote = Math.abs(drift) >= 0.0001
+        ? ` The file runs ${Math.abs(drift).toPrecision(2)}% ${drift > 0 ? 'slower' : 'faster'} than it was marked, and was corrected for.`
+        : '';
+      showResult({ text, detail: `Found by the watermark reader. ${shape}. The checksum matched.${speedNote}` });
       setStatus(`Found an identifier: ${text}`);
       return;
     }

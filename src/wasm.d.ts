@@ -41,6 +41,8 @@ export interface Core {
     status: 'verified' | 'damaged' | 'none';
     frame: Uint8Array;
     confidence: number;
+    /** 1 unless the file had been slowed or sped up and the reader corrected for it. */
+    speed: number;
   };
   destroy(): void;
 }

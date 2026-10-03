@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { loadCore } from '../src/load-node.js';
-import { ATTACK_LIST, ATTACKS, REMOVAL_LIST } from '../src/attacks.js';
+import { ATTACK_LIST, ATTACKS, EXTRA_LIST, REMOVAL_LIST } from '../src/attacks.js';
 import { bitErrors, frame, unframe } from '../src/frame.js';
 import { decodeWavChannels, encodeWavChannels } from '../src/wav.js';
 import * as spread from '../src/spread.js';
@@ -146,13 +146,17 @@ export async function main(argv) {
         // No sync found means there is nothing to compare, and reporting 100% (nothing read) or
         // 50% (a guess) would both be inventing a figure. It is reported as not found.
         const errors = seen ? bitErrors(framed, found.frame) : null;
+        // A frame that verifies but is not the one that went in is a different mark that checks out,
+        // which is not a survival: it is what averaging two differently-marked copies produces.
+        const verified = found.status === 'verified';
+        const same = verified && errors === 0;
         rows.push({
           attack: name,
           bitErrors: errors,
           bits,
           ber: seen ? errors / bits : null,
-          decoded: found.status === 'verified',
-          reason: found.status === 'verified' ? 'ok' : found.status === 'damaged' ? 'damaged' : 'no mark found',
+          decoded: same,
+          reason: same ? 'ok' : verified ? 'a different payload, which checks out' : found.status === 'damaged' ? 'damaged' : 'no mark found',
           confidence: found.confidence,
           note,
         });
@@ -192,6 +196,14 @@ export async function main(argv) {
       add(row.name, attackAll(row.id, row.param, row.seed ?? 0), row.note ?? '', rate);
     }
 
+    // Beyond the brief, labelled as such. A speed change is read at the rate the file claims, which
+    // is the rate it was marked at, because that is what a file played faster still says.
+    if (scheme === 'spread') {
+      for (const row of EXTRA_LIST) {
+        add(row.name, attackAll(row.id, row.param, row.seed ?? 0), 'beyond the brief');
+      }
+    }
+
     // What stereo material goes through that mono material does not: a fold to mono, and one channel
     // being all that is kept. The mark is the same stream in every channel, so both should read.
     if (channels > 1 && scheme === 'spread') {
@@ -215,15 +227,28 @@ export async function main(argv) {
     const haveFfmpeg = hasBinary('ffmpeg');
     if (haveFfmpeg) {
       const markedWav = encodeWavChannels(marked, wav.sampleRate);
-      for (const bitrate of ['128k', '64k']) {
+      for (const bitrate of scheme === 'spread' ? ['128k', '64k', '48k', '32k'] : ['128k', '64k']) {
         const samples = lossyRoundTrip(markedWav, wav.sampleRate, channels, bitrate);
-        if (samples) add(`mp3 ${bitrate}`, samples, 'needs ffmpeg');
+        const note = ['48k', '32k'].includes(bitrate) ? 'needs ffmpeg, beyond the brief' : 'needs ffmpeg';
+        if (samples) add(`mp3 ${bitrate}`, samples, note);
         else rows.push({ attack: `mp3 ${bitrate}`, skipped: true, note: 'ffmpeg failed' });
       }
     } else {
       for (const bitrate of ['128k', '64k']) {
         rows.push({ attack: `mp3 ${bitrate}`, skipped: true, note: 'ffmpeg not installed' });
       }
+    }
+
+    // Collusion: someone with two copies of the track averages them. With the same key and another
+    // payload the carriers agree and the bits partly cancel; with another key each mark is halved.
+    // With a copy of the original they can subtract it and have the mark itself, which no scheme
+    // that is read without the original can prevent, so that one is stated rather than measured.
+    if (scheme === 'spread') {
+      const other = (otherKey, otherPayload) =>
+        spread.embed(core, audio, new TextEncoder().encode(otherPayload), { key: otherKey, sampleRate: wav.sampleRate, strengthDb });
+      const average = (a, b) => a.map((channel, c) => channel.map((v, i) => (v + b[c][i]) / 2));
+      add('collusion: average with a copy marked differently (same key)', average(marked, other(key, 'urn:other:copy-2')), 'beyond the brief');
+      add('collusion: average with a copy under another key', average(marked, other(key ^ 0xffffn, String(args.payload))), 'beyond the brief');
     }
 
     const ran = rows.filter((r) => !r.skipped && !r.unmarked);

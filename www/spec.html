@@ -60,6 +60,9 @@
         does not land on one stretch of the message, and repeated end to end for as long as the
         track lasts. The reader finds where a copy starts from a keyed marker, with no help,
         so a cropped or shifted file reads, then combines every copy it can find before deciding.
+        It also estimates the mark's timing from the mark itself, so a file that has been slowed or
+        sped up by a few percent, or that has drifted by a clock error as small as thirty parts per
+        million, is corrected and read, and the page says by how much.
       </p>
       <p>
         Stereo files stay stereo. Every channel carries the same message, which is what lets a fold

@@ -128,13 +128,14 @@ export function detectRaw(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
  *
  * Three outcomes, kept apart so that "nothing here" cannot be read as "an empty payload":
  *
- * - `{ ok: true, payload, confidence }`: found, and the checksum matched.
+ * - `{ ok: true, payload, confidence, speed }`: found, and the checksum matched.
  * - `{ ok: false, reason: 'damaged', frame }`: a header was found, the checksum was not right. A mark
  *   was probably here. Nothing in `frame` is to be believed.
  * - `{ ok: false, reason: 'none' }`: nothing found.
  *
  * `confidence` is the sync peak in standard deviations, a measure of how clearly the start of the
- * mark stood out, and not a probability.
+ * mark stood out, and not a probability. `speed` is how much longer the file was than the mark's own
+ * timing, as a ratio: 1 normally, 1.0001 for a file slowed by 0.01%, which the reader corrects for.
  */
 export function detect(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   if (!Number.isFinite(sampleRate)) {
@@ -142,9 +143,9 @@ export function detect(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   }
   const { planar, channels } = lay(audio);
   const found = core.ssDetect(planar, splitKey(key), sampleRate, channels);
-  if (found.status === 'none') return { ok: false, reason: 'none', confidence: found.confidence };
+  if (found.status === 'none') return { ok: false, reason: 'none', confidence: found.confidence, speed: found.speed };
   if (found.status === 'damaged') {
-    return { ok: false, reason: 'damaged', frame: found.frame, confidence: found.confidence };
+    return { ok: false, reason: 'damaged', frame: found.frame, confidence: found.confidence, speed: found.speed };
   }
   // The core already checked, but the frame is checked again here, so that a core and a wrapper
   // that disagree about the format fail loudly rather than quietly.
@@ -152,5 +153,5 @@ export function detect(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   if (!decoded.ok) {
     throw new Error(`core reported a verified frame that the wrapper rejects: ${decoded.reason}`);
   }
-  return { ok: true, payload: decoded.payload, confidence: found.confidence };
+  return { ok: true, payload: decoded.payload, confidence: found.confidence, speed: found.speed };
 }

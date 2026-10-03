@@ -136,11 +136,14 @@ pub struct Detection {
     pub sync_sigmas: f64,
     /// How many whole copies of the stream were combined.
     pub copies: usize,
+    /// How much longer the file was than the mark's own timing, as a ratio: 1.0 when it matched,
+    /// 1.0001 for a file slowed by 0.01%. Only ever not 1.0 when the reader had to correct for it.
+    pub speed: f64,
 }
 
 impl Detection {
     fn none() -> Self {
-        Detection { status: Status::NoMark, frame: Vec::new(), sync_sigmas: 0.0, copies: 0 }
+        Detection { status: Status::NoMark, frame: Vec::new(), sync_sigmas: 0.0, copies: 0, speed: 1.0 }
     }
 }
 
@@ -339,7 +342,7 @@ fn expected_carrier(key: u64, a: &[f64]) -> Vec<f32> {
 /// many standard deviations the peak stood above the other offsets.
 fn find_boundary(y: &[f32], reference: &[f32]) -> Option<(usize, f64)> {
     let total_blocks = y.len() / CHIPS;
-    if total_blocks < 8 {
+    if total_blocks < 4 {
         return None;
     }
     let stride = (total_blocks / LAG_BLOCKS).max(1);
@@ -419,6 +422,192 @@ fn header_is_plausible(header: &[u8]) -> bool {
     header.len() == HEADER_BYTES && header[0..4] == frame::MAGIC && header[4] == frame::VERSION
 }
 
+/// Blocks folded together to place the bit boundary at one point in the file, when tracking timing.
+/// Longer runs give a cleaner peak and tolerate less drift within them, so the longer is tried first
+/// and the shorter, which tolerates a few times more, when it finds nothing.
+const TRACK_BLOCKS: [usize; 2] = [12, 4];
+
+/// Points along the file at which the boundary is placed. Its drift between them is the timing.
+const TRACK_SPANS: usize = 32;
+
+/// Fewest points that must place the boundary for a timing estimate to be believed.
+const TRACK_MIN_SPANS: usize = 6;
+
+/// Blocks folded per candidate speed in the coarse scan, and the scan's grid. The fold tolerates
+/// a speed error of several parts in ten thousand at this length, so a step of 8e-4 over plus or
+/// minus 8% finds any change a listener would call a change in tempo.
+const SCAN_BLOCKS: usize = 6;
+const SCAN_STEP: f64 = 8e-4;
+const SCAN_STEPS: i32 = 100;
+
+/// How far a candidate speed's boundary peak has to stand out to be taken up.
+const SCAN_MIN_SIGMAS: f64 = 8.0;
+
+/// Samples of lead-in given to the filters ahead of a span, so their start-up is not in it.
+const FILTER_LEAD: usize = 512;
+
+/// Where the bit boundary falls in `samples[start..start + blocks * CHIPS]`, and how clearly.
+fn span_boundary(
+    samples: &[f32],
+    start: usize,
+    blocks: usize,
+    a: &[f64],
+    reference: &[f32],
+) -> Option<(usize, f64)> {
+    let len = blocks * CHIPS;
+    if start < FILTER_LEAD || start + len > samples.len() {
+        return None;
+    }
+    let raw = &samples[start - FILTER_LEAD..start + len];
+    let y = band_limit(&fir(raw, a));
+    find_boundary(&y[FILTER_LEAD..], reference)
+}
+
+/// The file's speed relative to the mark's own timing, as a drift (0.0001 is 0.01% slow), found by
+/// following where the bit boundary falls along the file.
+///
+/// The boundary is placed from a short run of blocks at each of several points. At the mark's own
+/// timing it falls at the same place modulo one carrier period at every point; in a file that has
+/// been slowed it moves by the drift times the distance. The moves are unwrapped, since a step is
+/// less than half a period, and a line is fitted. Short runs tolerate a drift of a few parts in ten
+/// thousand without losing the peak, and the line is good to about a part in a million over a
+/// minute, which is what the full reader needs: it loses its peak past about three parts in a
+/// hundred thousand.
+fn track_speed(samples: &[f32], key: u64) -> Option<f64> {
+    TRACK_BLOCKS.iter().find_map(|&blocks| track_speed_blocks(samples, key, blocks))
+}
+
+fn track_speed_blocks(samples: &[f32], key: u64, blocks: usize) -> Option<f64> {
+    let span = blocks * CHIPS;
+    if samples.len() < FILTER_LEAD + span * 2 * TRACK_MIN_SPANS {
+        return None;
+    }
+    let a = whitening_filter(samples)?;
+    let reference = expected_carrier(key, &a);
+
+    let usable = samples.len() - FILTER_LEAD - span;
+    let spans = TRACK_SPANS.min(usable / (2 * span)).max(TRACK_MIN_SPANS);
+    let step = usable / (spans - 1);
+
+    let n = CHIPS as f64;
+    let mut points: Vec<(f64, f64)> = Vec::new(); // (position, unwrapped boundary phase)
+    let mut previous: Option<f64> = None;
+    for i in 0..spans {
+        let start = FILTER_LEAD + i * step;
+        let Some((offset, _)) = span_boundary(samples, start, blocks, &a, &reference) else {
+            continue;
+        };
+        let phase = ((start + offset) % CHIPS) as f64;
+        let unwrapped = match (previous, points.last()) {
+            (Some(prev_raw), Some(&(_, last))) => {
+                let mut d = phase - prev_raw;
+                d -= n * (d / n).round();
+                last + d
+            }
+            _ => phase,
+        };
+        previous = Some(phase);
+        points.push((start as f64, unwrapped));
+    }
+
+    let fit = |pts: &[(f64, f64)]| -> (f64, f64) {
+        let count = pts.len() as f64;
+        let mx = pts.iter().map(|p| p.0).sum::<f64>() / count;
+        let my = pts.iter().map(|p| p.1).sum::<f64>() / count;
+        let sxx: f64 = pts.iter().map(|p| (p.0 - mx).powi(2)).sum();
+        let sxy: f64 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+        let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+        (slope, my - slope * mx)
+    };
+
+    if points.len() < TRACK_MIN_SPANS {
+        return None;
+    }
+    let (slope, intercept) = fit(&points);
+    // One pass of dropping points that sit far from the line, since a span in a quiet passage can
+    // place the boundary somewhere that is not the mark's, and one such point tilts the whole fit.
+    let kept: Vec<(f64, f64)> = points
+        .iter()
+        .copied()
+        .filter(|p| (p.1 - (slope * p.0 + intercept)).abs() <= 8.0)
+        .collect();
+    if kept.len() < TRACK_MIN_SPANS {
+        return None;
+    }
+    let (slope, intercept) = fit(&kept);
+    let rms = (kept.iter().map(|p| (p.1 - (slope * p.0 + intercept)).powi(2)).sum::<f64>() / kept.len() as f64).sqrt();
+    // A line that the points do not lie on is not a speed. Placing a boundary is good to a sample or
+    // two when the drift inside a run is small and to several when it is not (a drift of a tenth of
+    // a percent smears a run of twelve blocks by 25 samples), and a fit worse than that is
+    // following noise: random phases would leave almost nothing within eight samples of any line.
+    if rms > 5.0 || slope.abs() < 2e-7 || slope.abs() > 0.05 {
+        return None;
+    }
+    Some(slope)
+}
+
+/// A coarse speed, as a ratio, found by trying a grid of them and keeping the one under which the
+/// boundary peak is strongest at two points in the file.
+fn scan_speed(samples: &[f32], key: u64) -> Option<f64> {
+    let span = SCAN_BLOCKS * CHIPS;
+    let reach = ((span + FILTER_LEAD) as f64 * (1.0 + SCAN_STEP * SCAN_STEPS as f64)).ceil() as usize + 64;
+    if samples.len() < 3 * reach {
+        return None;
+    }
+    let a = whitening_filter(samples)?;
+    let reference = expected_carrier(key, &a);
+    let positions = [samples.len() / 3, 2 * samples.len() / 3];
+
+    let at_speed = |position: usize, r: f64| -> Option<f64> {
+        let take = (((span + FILTER_LEAD) as f64 * r).ceil() as usize + 64).min(samples.len() - position);
+        let fixed = resample::resample(&samples[position..position + take], RATE * r, RATE);
+        if fixed.len() < FILTER_LEAD + span {
+            return None;
+        }
+        let y = band_limit(&fir(&fixed[..FILTER_LEAD + span], &a));
+        find_boundary(&y[FILTER_LEAD..], &reference).map(|(_, sigmas)| sigmas)
+    };
+
+    let mut best: Option<(f64, f64)> = None;
+    for step in -SCAN_STEPS..=SCAN_STEPS {
+        if step == 0 {
+            continue;
+        }
+        let r = 1.0 + step as f64 * SCAN_STEP;
+        // The first point alone is enough to reject most candidates, so the second is only paid for
+        // by those that pass.
+        let Some(first) = at_speed(positions[0], r).filter(|&s| s >= SCAN_MIN_SIGMAS) else {
+            continue;
+        };
+        let Some(second) = at_speed(positions[1], r).filter(|&s| s >= SCAN_MIN_SIGMAS) else {
+            continue;
+        };
+        let score = first + second;
+        if best.map_or(true, |(_, b)| score > b) {
+            best = Some((r, score));
+        }
+    }
+    best.map(|(r, _)| r)
+}
+
+/// Speeds worth trying, most likely first. Empty when nothing in the file looks like the mark at
+/// any speed, which is what an unmarked file gives.
+fn estimate_speeds(at_rate: &[f32], key: u64) -> Vec<f64> {
+    if let Some(drift) = track_speed(at_rate, key) {
+        return vec![1.0 + drift];
+    }
+    let Some(coarse) = scan_speed(at_rate, key) else {
+        return Vec::new();
+    };
+    // The coarse speed is good to a few parts in ten thousand, which is not enough for the full
+    // reader. Undo it and track what is left.
+    let fixed = resample::resample(at_rate, RATE * coarse, RATE);
+    match track_speed(&fixed, key) {
+        Some(rest) => vec![coarse * (1.0 + rest), coarse],
+        None => vec![coarse],
+    }
+}
+
 /// Look for a mark in `samples`, recorded at `sample_rate`.
 ///
 /// Never trusts what it reads: a result is `Verified` only when the frame's magic, version,
@@ -429,18 +618,61 @@ pub fn detect(samples: &[f32], sample_rate: f64, key: u64) -> Result<Detection, 
     }
     let bounded = &samples[..samples.len().min(MAX_ANALYSIS)];
     let at_rate = resample::resample(bounded, sample_rate, RATE);
-    if at_rate.len() < 8 * CHIPS {
-        return Ok(Detection::none());
+
+    let straight = detect_at_rate(&at_rate, key);
+    if straight.status != Status::NoMark {
+        return Ok(straight);
     }
 
-    let Some(a) = whitening_filter(&at_rate) else {
-        return Ok(Detection::none());
+    // Nothing at the rate the file claims. A file that has been slowed or sped up, or played
+    // through a clock that is not quite the one it was recorded with, carries the mark at a
+    // slightly different period, and the fixed-period reader above finds nothing in it. The
+    // timing is estimated from the mark itself and undone, and the same reader is run again. Every
+    // result still has to pass the frame's own checks, so this adds tries, not false positives.
+    let mut damaged: Option<Detection> = None;
+    for speed in estimate_speeds(&at_rate, key) {
+        let fixed = resample::resample(&at_rate, RATE * speed, RATE);
+        let mut found = detect_at_rate(&fixed, key);
+        found.speed = speed;
+        if found.status == Status::Verified {
+            return Ok(found);
+        }
+        // The estimate is good to a few parts per million, and the reader loses its peak at a few
+        // tens, so most files read first time. One that does not, whether it found a damaged mark or
+        // nothing, is tracked again on the corrected audio and read once more with what is left.
+        if let Some(rest) = track_speed(&fixed, key) {
+            let refined = speed * (1.0 + rest);
+            let again = resample::resample(&at_rate, RATE * refined, RATE);
+            let mut second = detect_at_rate(&again, key);
+            second.speed = refined;
+            if second.status == Status::Verified {
+                return Ok(second);
+            }
+            if second.status == Status::Damaged && damaged.is_none() {
+                damaged = Some(second);
+            }
+        }
+        if found.status == Status::Damaged && damaged.is_none() {
+            damaged = Some(found);
+        }
+    }
+    Ok(damaged.unwrap_or(straight))
+}
+
+/// The reader proper, for audio already at the mark's own rate and timing.
+fn detect_at_rate(at_rate: &[f32], key: u64) -> Detection {
+    if at_rate.len() < 8 * CHIPS {
+        return Detection::none();
+    }
+
+    let Some(a) = whitening_filter(at_rate) else {
+        return Detection::none();
     };
-    let y = band_limit(&fir(&at_rate, &a));
+    let y = band_limit(&fir(at_rate, &a));
     let reference = expected_carrier(key, &a);
 
     let Some((boundary, _)) = find_boundary(&y, &reference) else {
-        return Ok(Detection::none());
+        return Detection::none();
     };
 
     // One soft value per bit: the correlation coefficient of the block with the carrier, scaled
@@ -459,7 +691,7 @@ pub fn detect(samples: &[f32], sample_rate: f64, key: u64) -> Result<Detection, 
         soft.push((dot / (norm * ref_norm) * (CHIPS as f64).sqrt()) as f32);
     }
     if soft.len() < SYNC_BITS + ecc::BITS_PER_BYTE * HEADER_BYTES {
-        return Ok(Detection::none());
+        return Detection::none();
     }
 
     let sync = sync_word(key);
@@ -470,7 +702,7 @@ pub fn detect(samples: &[f32], sample_rate: f64, key: u64) -> Result<Detection, 
     let mut magnitudes: Vec<f64> = scores.iter().map(|s| s.abs()).collect();
     let sigma = 1.4826 * median(&mut magnitudes);
     if !(sigma > 0.0) {
-        return Ok(Detection::none());
+        return Detection::none();
     }
 
     let mut order: Vec<usize> = (0..positions).collect();
@@ -532,14 +764,15 @@ pub fn detect(samples: &[f32], sample_rate: f64, key: u64) -> Result<Detection, 
             Err(FrameError::NoMark) | Err(FrameError::TooShort) => continue,
             Err(_) => Status::Damaged,
         };
-        return Ok(Detection {
+        return Detection {
             status,
             frame: frame_bytes,
             sync_sigmas: scores[start].abs() / sigma,
             copies,
-        });
+            speed: 1.0,
+        };
     }
-    Ok(Detection::none())
+    Detection::none()
 }
 
 
@@ -758,6 +991,53 @@ mod tests {
                 x * gain
             })
             .collect()
+    }
+
+
+    #[test]
+    fn a_file_slowed_or_sped_up_is_still_read_and_the_speed_is_reported() {
+        // The reader is told 44.1 kHz and the file is not quite that: a clock that is slightly off,
+        // a tempo change, a PAL-style speed-up. A fixed-period reader loses even 30 parts per
+        // million of this over a minute, which is why it estimates the timing from the mark.
+        let (_, out) = marked(seconds_needed() * 2.2);
+        for ratio in [1.00003f64, 1.0001, 1.01, 0.96, 1.06] {
+            let changed = resample::resample(&out, RATE, RATE * ratio);
+            let found = detect(&changed, RATE, KEY).unwrap();
+            assert_eq!(found.status, Status::Verified, "ratio {ratio}: {found:?}");
+            assert_eq!(found.frame, payload(), "ratio {ratio}");
+            assert!((found.speed - ratio).abs() < 2e-4, "ratio {ratio} reported as {}", found.speed);
+        }
+    }
+
+    #[test]
+    fn a_file_at_its_own_timing_reports_a_speed_of_one() {
+        let (_, out) = marked(seconds_needed() * 2.2);
+        assert_eq!(detect(&out, RATE, KEY).unwrap().speed, 1.0);
+    }
+
+    #[test]
+    fn the_speed_search_does_not_find_a_mark_that_is_not_there() {
+        // Searching over speeds is more chances to see something, so the cases that must stay
+        // empty are run through it: unmarked music, a mark under another key, a changed speed
+        // with no mark at all.
+        let host = music(seconds_needed() * 2.2, RATE, 17);
+        for ratio in [1.0f64, 1.0003, 0.97] {
+            let changed = resample::resample(&host, RATE, RATE * ratio);
+            assert_eq!(detect(&changed, RATE, KEY).unwrap().status, Status::NoMark, "unmarked at {ratio}");
+        }
+        let (_, out) = marked(seconds_needed() * 2.2);
+        let slowed = resample::resample(&out, RATE, RATE * 1.002);
+        assert_ne!(detect(&slowed, RATE, KEY ^ 7).unwrap().status, Status::Verified);
+    }
+
+    #[test]
+    fn speed_tracking_places_a_known_drift() {
+        let (_, out) = marked(seconds_needed() * 2.2);
+        let slowed = resample::resample(&out, RATE, RATE * 1.0002);
+        let drift = track_speed(&slowed, KEY).expect("a drift is found");
+        assert!((drift - 0.0002).abs() < 5e-6, "found {drift}");
+        // And none in a file that has none, rather than a small invented one.
+        assert!(track_speed(&out, KEY).is_none());
     }
 
     #[test]

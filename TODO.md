@@ -124,6 +124,8 @@ measured baseline.
       in order of cost: a stronger code than Hamming (convolutional with Viterbi, or LDPC), since near the edge
       rows come back damaged at 1-3% bit errors, more chips per bit, and weighting bands by how clean the host is
       there. Each is measured through the harness on real audio, at a fixed strength.
+- [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
+      the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
 - [ ] **A removal attack for the spread scheme.** The scrub rows are LSB-only now. Keyless: notch the band,
       whiten and subtract, a re-synthesis through a codec at a low rate, and collusion between two
       differently-marked copies. Each is a row in the table with its own figure.

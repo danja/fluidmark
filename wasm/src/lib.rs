@@ -588,7 +588,9 @@ pub unsafe extern "C" fn core_ss_embed(
 /// `SS_DAMAGED` when a frame header was found but its checksum did not match. In the first and
 /// third cases the frame bytes as read are in `out`, whose length counts bytes; in the second it
 /// is zero. Only the first means anything may be believed. `confidence` receives how far the sync
-/// peak stood above the noise, in standard deviations, and is zero when there was no peak.
+/// peak stood above the noise, in standard deviations, and is zero when there was no peak. `speed`
+/// receives how much longer the file was than the mark's own timing as a ratio, 1.0 unless the
+/// reader had to correct for a file that had been slowed or sped up.
 ///
 /// `audio` is planar, as for `core_ss_embed`, and what is read is the average of its channels. The
 /// work is bounded: only the first `spread::MAX_ANALYSIS` frames are read.
@@ -601,8 +603,9 @@ pub unsafe extern "C" fn core_ss_detect(
     channels: u32,
     out: *mut f32,
     confidence: *mut f64,
+    speed: *mut f64,
 ) -> i32 {
-    if audio.is_null() || out.is_null() || confidence.is_null() {
+    if audio.is_null() || out.is_null() || confidence.is_null() || speed.is_null() {
         return CORE_ERR_NULL;
     }
     let Some(audio_header) = header_of(audio) else {
@@ -628,6 +631,7 @@ pub unsafe extern "C" fn core_ss_detect(
     }
     out_header.len = found.frame.len() as u32;
     *confidence = found.sync_sigmas;
+    *speed = found.speed;
     match found.status {
         spread::Status::Verified => CORE_OK,
         spread::Status::NoMark => SS_NO_MARK,

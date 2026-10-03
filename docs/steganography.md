@@ -318,6 +318,57 @@ A six-minute stereo file marks in about 2.7 seconds and reads in about 1.7 in Wa
 marker's peak memory is about 1.2 GB, which is a lot for a phone and not a limit anyone has tested. Most of
 it is copies of the channels; chunked embedding would cut it, and is in `TODO.md`.
 
+### Beyond the brief: speed, drift, harsher codecs, collusion
+
+The attack list in `src/attacks.js` is the brief. `EXTRA_LIST` and a few harness rows hold what a mark
+meets in practice and the brief does not name, kept apart so that "passes the list" keeps its meaning.
+
+**Speed and clock drift were the largest hole, and are closed.** The first version of the reader assumed
+the mark's timing exactly. A file slowed by **0.003%**, a clock error of thirty parts per million, lost
+the mark completely: the bit boundary moves by a sample every few thousand and the reader folds the whole
+file onto one carrier period. That is the error between two audio clocks, so it would have hit any file
+played out and recorded in again, and any tempo change, however small.
+
+The reader now estimates the timing from the mark. The bit boundary is placed from a short run of blocks
+at each of 32 points along the file; at the mark's own timing it falls in the same place at every point,
+and in a slowed file it moves by the drift times the distance. The moves are unwrapped and a line is
+fitted, which gives the speed to about a part in a million. A coarse scan over plus or minus 8% in steps
+of 0.08% takes over when the drift is too large for the tracking to place the boundary at all. The file
+is then resampled to the mark's timing and read as before, and a read that finds a damaged mark is
+tracked once more and tried again. The frame's magic, version and CRC-16 still decide whether anything
+was found, so searching speeds adds tries and not false positives, and unmarked music, music at changed
+speeds and the wrong key are tested to stay empty. The reader reports the speed it corrected for, and the
+page says so.
+
+Measured, key 2, 44.1 kHz, the file telling the reader 44.1 kHz throughout (`slowed` is more samples for
+the same music):
+
+| Beyond the brief | `loops` -20 dB | `round60` -20 dB | `loops` -26 dB | `round60` -26 dB |
+|---|---|---|---|---|
+| slowed 0.003% | read | read | read | read |
+| slowed 0.01% | read | read | read | read |
+| slowed 0.1% | read | read | read | read |
+| slowed 1% | read | read | **lost** | read |
+| sped up 4% (PAL-style) | read | read | **lost** | read |
+| low-pass 4 kHz and 2 kHz | read | read | | |
+| gain -30 dB | read | read | | |
+| mp3 48k and 32k | read | read | | |
+| collusion, another key | read | read | | |
+| collusion, same key | **damaged** | **a different payload** | | |
+
+Past about plus or minus 8% the reader finds nothing, and a resample from 44.1 to 48 kHz read as 44.1 is
+8.8%. Pitch shifting without a change of tempo is not tried: it would need the same estimate in the
+frequency axis.
+
+**Collusion.** Averaging two copies that were marked under the same key with different payloads makes the
+bits where they differ cancel. On one host the reader recovered a payload that checks out and is not the
+one that went in (the other copy's), and on the other it found a damaged mark. It never produced a third
+payload, and it is reported as neither a survival nor a failure to read, because it is the thing a
+collusion attack is for: someone with several copies learns nothing about which copy is whose from this, but
+the mark does not stay with the first one. Averaging two copies marked under different keys halves each, and
+both still read. Subtracting a copy of the original from a marked file leaves the mark itself, and no scheme
+that is read without the original prevents that.
+
 ### What this does not say
 
 - **It does not say the mark is inaudible.** -20 dB relative to the in-band level of the host is a
@@ -332,7 +383,8 @@ it is copies of the channels; chunked embedding would cut it, and is in `TODO.md
   not measured.
 - Two hosts, one payload size, and one key per table. The mark's level follows the host's in-band RMS per 1024-sample
   block, which is a crude stand-in for a masking threshold and not a model of one.
-- Reading takes about 1.7 s for the first three minutes of any file, which is the most it looks at. Marking
+- Reading takes about 1.7 s for the first three minutes of any file, which is the most it looks at, and a
+  few seconds more for a file that does not read straight off, since it then searches for a speed. Marking
   is about 0.5 s per minute per channel.
 
 ## How you would remove the mark

@@ -70,6 +70,12 @@ export function createCore(instance) {
   if (scratch === 0) {
     throw new Error('core_scratch_new returned null');
   }
+  // A second slot for the calls that return two numbers. One slot reused for both would have the
+  // second write land on the first.
+  const scratch2 = e.core_scratch_new();
+  if (scratch2 === 0) {
+    throw new Error('core_scratch_new returned null');
+  }
 
   /**
    * A buffer, as an opaque handle. The pointer never leaves this module, so no caller can
@@ -374,7 +380,9 @@ export function createCore(instance) {
    * Returns `{ status, frame, confidence }`. `status` is `'verified'` only when the frame's
    * checksum matched, `'damaged'` when a header was found and the checksum did not, and
    * `'none'` when nothing was. `frame` is the bytes as read, and is not to be believed unless
-   * the status is `'verified'`. `confidence` is the sync peak in standard deviations.
+   * the status is `'verified'`. `confidence` is the sync peak in standard deviations. `speed` is
+   * how much longer the file was than the mark's own timing, as a ratio: 1 unless the reader had to
+   * correct for a file that had been slowed or sped up.
    *
    * `audio` is planar for more than one channel, and what is read is the average of the channels.
    */
@@ -387,12 +395,13 @@ export function createCore(instance) {
     try {
       fillSamples(audioBuffer, audio);
       const code = e.core_ss_detect(
-        audioBuffer.ptr, sampleRate, key.lo, key.hi, channels, outBuffer.ptr, scratch,
+        audioBuffer.ptr, sampleRate, key.lo, key.hi, channels, outBuffer.ptr, scratch, scratch2,
       );
       if (code < 0) check(code, 'core_ss_detect');
       const confidence = doubleOut(memory, scratch)[0];
+      const speed = doubleOut(memory, scratch2)[0];
       const status = code === 0 ? 'verified' : code === 2 ? 'damaged' : 'none';
-      return { status, frame: readBytes(outBuffer), confidence };
+      return { status, frame: readBytes(outBuffer), confidence, speed };
     } finally {
       destroyBuffer(outBuffer);
       destroyBuffer(audioBuffer);
@@ -433,6 +442,9 @@ export function createCore(instance) {
   function destroy() {
     if (scratch !== 0) {
       e.core_scratch_free(scratch);
+    }
+    if (scratch2 !== 0) {
+      e.core_scratch_free(scratch2);
     }
   }
 

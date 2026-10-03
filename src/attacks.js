@@ -64,3 +64,23 @@ export const ATTACK_LIST = [
   { id: ATTACKS.TIME_SHIFT, name: 'time shift 1000 samples', param: 1000 },
   { id: ATTACKS.CROP_FRACTION, name: 'crop first 5%', param: 0.05 },
 ];
+
+/**
+ * What a mark meets in practice and the brief does not list.
+ *
+ * Kept apart from `ATTACK_LIST`, which is the specification: that list is the brief, and a row
+ * added there because it was convenient would change what "passes" means. These are measured and
+ * reported beside it. `keepRate` means the reader is told the original sample rate rather than the
+ * resampled one, which is what a speed change is: the file says 44.1 kHz and plays faster.
+ */
+export const EXTRA_LIST = [
+  // A ratio above 1 is more samples for the same music: slower, lower. The file still says 44.1 kHz.
+  { id: ATTACKS.RESAMPLE, name: 'slowed 0.003% (clock drift)', param: 1.00003, keepRate: true },
+  { id: ATTACKS.RESAMPLE, name: 'slowed 0.01% (clock drift)', param: 1.0001, keepRate: true },
+  { id: ATTACKS.RESAMPLE, name: 'slowed 0.1%', param: 1.001, keepRate: true },
+  { id: ATTACKS.RESAMPLE, name: 'slowed 1%', param: 1.01, keepRate: true },
+  { id: ATTACKS.RESAMPLE, name: 'sped up 4% (PAL-style)', param: 0.96, keepRate: true },
+  { id: ATTACKS.LOWPASS, name: 'low-pass 4 kHz', param: 4000 },
+  { id: ATTACKS.LOWPASS, name: 'low-pass 2 kHz', param: 2000 },
+  { id: ATTACKS.GAIN_DB, name: 'gain -30 dB', param: -30 },
+];

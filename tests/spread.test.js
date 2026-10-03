@@ -143,8 +143,29 @@ describe('through the attack list', () => {
     expect(found.ok).toBe(false);
   });
 
-  it('finds nothing in a marked track read at the wrong rate', () => {
-    // Without the rate the reader cannot undo a resample. It must not report a payload anyway.
+  it('survives a file played slower or faster than it was marked, and reports by how much', () => {
+    // The file still says 44.1 kHz. A clock off by a hundred parts per million, a one percent tempo
+    // change and a PAL-style speed-up all read, because the timing is estimated from the mark.
+    for (const ratio of [1.0001, 1.01, 0.96]) {
+      const found = read(attacked(ATTACKS.RESAMPLE, ratio));
+      expect(found.ok, `ratio ${ratio}`).toBe(true);
+      expect(Math.abs(found.speed - ratio), `ratio ${ratio} reported as ${found.speed}`).toBeLessThan(2e-4);
+    }
+  });
+
+  it('reports a speed of one for a file at its own timing', () => {
+    expect(read(marked).speed).toBe(1);
+  });
+
+  it('does not find a mark by searching over speeds in a track that has none', () => {
+    const unmarked = core.attack(ATTACKS.RESAMPLE, 1.003, RATE, host);
+    expect(read(unmarked).ok).toBe(false);
+  });
+
+  it('finds nothing in a marked track resampled further than the speed search reaches', () => {
+    // The reader corrects for a change of up to about 8%. A resample to 48 kHz read as 44.1 kHz
+    // is 8.8%, outside it, and the reader cannot undo it without being told the rate, so it has
+    // to report nothing and not a payload.
     const ratio = 48000 / 44100;
     expect(read(attacked(ATTACKS.RESAMPLE, ratio), RATE).ok).toBe(false);
   });
