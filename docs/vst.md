@@ -123,20 +123,39 @@ Everything below runs under CTest with no host, as downspout's cores do, plus th
 
 ## Where it stands
 
-**Milestones 1 and the core of 2 are done** (2026-10-03). `wasm/src/mark_stream.rs` is the streaming embedder and
-the offline masked embedder is now that stream fed a whole channel, so every host runs one code path. It matches the
-whole-file embedder it replaced to the bit, at 44.1 and 48 kHz, everywhere except the last three hops, where the
-old one stopped its carrier at the end of the file and clamped the last frame's neighbours and the stream is followed
-by silence instead. The mark therefore fades over the final hop, which is the right thing at the end of a track and
-a difference of a few tens of milliseconds in a minute. The latency is exactly `3 * HOP = 3072` samples (70 ms at
-44.1 kHz, 64 ms at 48), held by a test. Output is the same for any block size, from 1 sample to 4096 and mixed, and
-for a stream that starts part-way along a timeline. Nothing is allocated while it runs, counted by a wrapped
-allocator with a control that the counter counts. The C ABI (`docs/ffi.md`) and a C++ link check that drives it with
-a plugin's call pattern pass.
+**A working VST3 exists** (2026-10-03). Milestones 1 to 4 are built, and a first cut of 5, and every part that can be
+checked without a person has been. `npm run build:vst` builds the Rust core, the engine and `build/vst/bin/
+fluidmark_mark.vst3`; `npm run test:vst` runs the engine's tests under CTest.
 
-Left in milestone 2 and then 3: a new identifier or key at a copy boundary (the two configurations alive across the
-boundary, the old one freed off the audio thread), the model at 88.2 and 96 kHz, and the C++ engine with its own
-CTest suite.
+- **The streaming embedder** (`wasm/src/mark_stream.rs`) is the embedder: the offline masked call is that stream fed a
+  whole channel, so every host runs one code path. It matches the whole-file embedder it replaced to the bit, at 44.1
+  and 48 kHz, everywhere except the last three hops, where the old one stopped its carrier at the end of the file and
+  the stream is followed by silence instead, so the mark fades over the final hop. The latency is exactly `3 * HOP =
+  3072` samples (70 ms at 44.1 kHz, 64 at 48). Output is the same for any block size, from 1 sample to 4096, and for a
+  stream started part-way along a timeline. Nothing is allocated while it runs, counted with a wrapped allocator
+  (and a control that the counter counts).
+- **The C ABI** (`docs/ffi.md`) and a C++ link check that drives it with a plugin's call pattern.
+- **The C++ engine** (`vst/mark/`), no DPF in it. It frames the identifier and derives the key through the core
+  (one framing and one key derivation in the whole system, so a mark made in a DAW reads in the page), follows the
+  host's timeline, delays a bypassed or unmarked signal by exactly the latency, and swaps to a new identifier or key
+  with a worker building the replacement and a 512-sample crossfade, no lock and no allocation on the audio thread.
+  A new identifier does not wait for a copy boundary: the carrier is anchored to the timeline, so a message that
+  begins mid-copy is a partial copy of itself and the reader combines partial copies. CTest covers: the latency; a
+  mark the core's reader verifies and the wrong key does not; identical bits at seven block sizes; an identifier
+  change mid-file reading as the first message at the start and the second at the end; **zero allocations on the
+  audio thread through the swap**, counting the Rust core's too by wrapping malloc at link time; no step in the mark
+  at the swap; bypass settling to the delayed dry signal; and a loop-style jump in the timeline.
+- **The DPF wrapper and the NanoVG UI** (`vst/mark/src/dpf/`): margin and bypass parameters, the identifier and key as
+  state, latency reported to the host, creator `danja` and brand `Downspout`. The UI has the two text fields, the
+  margin slider, bypass, and the readouts in words. Carla's discovery tool instantiates the bundle (two inputs, two
+  outputs, name and maker as expected). `vst/scripts/ui-check.sh` drives the real standalone UI under Xvfb,
+  clicking, typing and dragging, and fails on an assertion or an input that changed nothing. It found one
+  (NanoVG asserts on drawing an empty string).
+
+**Not done, and not checkable here:** a person loading it in REAPER, which is the first thing that is left; the model
+at 88.2 and 96 kHz; macOS and Windows; CI; and a pluginval run. The UI has been seen only in a virtual X server.
+
+Install, once you want to try it, is a copy: `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/`, then a rescan.
 
 ## Milestones
 

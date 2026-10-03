@@ -22,6 +22,8 @@
     "test:core": "cargo test --release --manifest-path wasm/Cargo.toml",
     "test:native": "node bin/check-native-link.js",
     "test:js": "vitest run",
+    "build:vst": "cmake -S vst -B build/vst -DCMAKE_BUILD_TYPE=Release && cmake --build build/vst -j8",
+    "test:vst": "npm run build:vst && ctest --test-dir build/vst --output-on-failure",
     "test": "npm run build && npm run test:core && npm run test:native && npm run test:js",
     "check:web": "node www/browser-check.js http://127.0.0.1:8080",
     "docker:build": "docker build -t fluidmark:local .",

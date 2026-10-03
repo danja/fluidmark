@@ -82,7 +82,7 @@ fn carrier_at(bits: &[f32], period: &[f32], resampler: &Option<Resampler>, pos0:
         return 0.0;
     }
     let at = |j: usize| bits[(j / CHIPS) % bits.len()] * period[j % CHIPS];
-    let index = pos0 as usize + i as usize;
+    let index = pos0.wrapping_add(i as u64) as usize;
     match resampler {
         None => at(index),
         Some(r) => r.sample_at(index, at),
@@ -130,6 +130,15 @@ impl MaskedStream {
 
     pub fn channels(&self) -> usize {
         self.lanes.len()
+    }
+
+    /// Say what stream position the next input sample has, so that the carrier follows a host's timeline when it
+    /// jumps (a seek, a loop) or when a stream is begun part-way along it. The frames in flight at the moment of
+    /// the call mix the two positions, a few tens of milliseconds of a mark that is far under the music, and the
+    /// audio itself has just jumped.
+    pub fn set_position(&mut self, position: u64) {
+        let taken = self.lanes.first().map_or(0, |l| l.taken);
+        self.pos0 = position.wrapping_sub(taken);
     }
 
     /// Move the margin. Takes effect at the next frame, and the overlap of the frames' windows is the

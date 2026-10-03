@@ -175,15 +175,16 @@ deterministic tests that run without a DAW.
 - [x] **1. A streaming embedder in the Rust core**, and the only embedder: `wasm/src/mark_stream.rs`, bit-identical to the
       whole-file one it replaced except the last three hops, block-size independent, exact latency (3072), position-based,
       nothing allocated while it runs. The offline masked call is a wrapper over it, so memory for a long file dropped too.
-- [ ] **2. The C ABI for it.** Create, process, latency, margin and destroy are done and a C++ link check drives them
-      (`docs/ffi.md`). Left: a new identifier or key taking effect at a copy boundary, with the old configuration freed
-      off the audio thread, and the static-link flags settled for a VST3 bundle rather than a test binary.
-- [ ] **3. The C++ engine and its CTest suite**, with no DPF and no DAW: bit equality, block-size independence, no
-      allocation in `process` (counted), exact latency, a round trip through `core_ss_detect`, parameter behaviour,
-      four sample rates, mono and stereo, and the model's verdict through `core_nmr`.
-- [ ] **4. A DPF wrapper with no UI**, building a VST3 (`vst/`, CMake, `DPF_ROOT` defaulting to downspout's copy).
-      A person loads it in REAPER and Carla (`HUMANS.md`).
-- [ ] **5. The NanoVG UI**: identifier and key entry (custom, NanoVG has none), margin, the readouts and the peak warning.
+- [x] **2. The C ABI for it**: create, process, set position and margin, destroy, latency, framing and the key
+      derivation, driven by a C++ link check (`docs/ffi.md`). A new identifier needs no copy boundary: see `docs/vst.md`.
+- [x] **3. The C++ engine and its CTest suite** (`vst/mark/`, `npm run test:vst`): latency, a round trip through the core's
+      reader, block sizes, an identifier swap with zero audio-thread allocations counted, no step at the swap, bypass, a
+      timeline jump.
+- [x] **4. A DPF wrapper**, building `build/vst/bin/fluidmark_mark.vst3`. Carla's discovery instantiates it.
+- [x] **5. A first NanoVG UI**: identifier and key entry, margin, bypass, readouts in words. Driven under Xvfb by
+      `vst/scripts/ui-check.sh`. Not yet seen in a DAW.
+- [ ] **A person loads it in REAPER** (`HUMANS.md`): `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/`, rescan, put it last
+      in a chain, type an identifier, bounce, and read the bounce with `node bin/mark.js --read`.
 - [ ] **6. Packaging and CI**, Linux first. macOS and Windows built and untested until someone has them.
 - [ ] **7. The listening check**, which decides the default margin the plugin ships with (`HUMANS.md`).
 - [ ] **The audibility model at 88.2 and 96 kHz.** The analysis frame has to scale to keep its resolution in Hz, and the

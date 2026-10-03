@@ -273,6 +273,26 @@ pub enum Level {
     Masked,
 }
 
+/// A 64-bit key from text, by FNV-1a over its UTF-8 bytes. Empty text gives `DEFAULT_KEY`, so "no key" is never
+/// a different thing from "the default one".
+///
+/// The same derivation as `keyFromText` in `src/spread.js`, which a test holds equal, so a phrase typed into
+/// the page and one typed into a plugin make the same key.
+pub fn key_from_text(text: &[u8]) -> u64 {
+    if text.is_empty() {
+        return DEFAULT_KEY;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in text {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The key used when none is given. Public, in this source file, so a mark made with it can be read by anyone.
+pub const DEFAULT_KEY: u64 = 0x0123_4567_89ab_cdef;
+
 /// The bits and the carrier period for a frame and a key, for a streaming embedder that is built from them.
 /// `None` for a frame too short to be one.
 pub fn stream_parts(frame_bytes: &[u8], key: u64) -> Option<(Vec<f32>, Vec<f32>)> {
@@ -1391,6 +1411,14 @@ mod tests {
             embed_level_in_place(&mut short, &payload(), KEY, RATE, -6.0, Level::Masked),
             Err(SpreadError::TooShort),
         );
+    }
+
+    #[test]
+    fn a_phrase_makes_the_same_key_as_the_javascript_one() {
+        // FNV-1a 64 of "a" is a published vector, and the JavaScript side pins the same one.
+        assert_eq!(key_from_text(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(key_from_text(b""), DEFAULT_KEY);
+        assert_ne!(key_from_text(b"a phrase"), key_from_text(b"a phrasf"));
     }
 
     #[test]

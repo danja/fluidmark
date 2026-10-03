@@ -892,3 +892,32 @@ pub unsafe extern "C" fn core_frame_encode(payload: *const u8, len: u32, flags: 
     std::ptr::copy_nonoverlapping(framed.as_ptr(), out, framed.len());
     framed.len() as i32
 }
+
+
+/// Say what stream position the next input sample has. Real-time safe. See `MaskedStream::set_position`.
+#[no_mangle]
+pub unsafe extern "C" fn core_mark_set_position(handle: *mut MarkHandle, position: u64) -> i32 {
+    if handle.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let h = &mut *handle;
+    if h.magic != MARK_MAGIC {
+        return CORE_ERR_MAGIC;
+    }
+    h.stream.set_position(position);
+    CORE_OK
+}
+
+/// A 64-bit key from text, as two 32-bit halves. Empty text is the public default key. The one derivation:
+/// the page's `keyFromText` is held equal to it by a test.
+#[no_mangle]
+pub unsafe extern "C" fn core_key_from_text(text: *const u8, len: u32, lo: *mut u32, hi: *mut u32) -> i32 {
+    if (text.is_null() && len > 0) || lo.is_null() || hi.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let bytes = if len == 0 { &[][..] } else { std::slice::from_raw_parts(text, len as usize) };
+    let key = spread::key_from_text(bytes);
+    *lo = key as u32;
+    *hi = (key >> 32) as u32;
+    CORE_OK
+}

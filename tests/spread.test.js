@@ -307,3 +307,16 @@ describe('masked level', () => {
     expect(() => embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'loud' })).toThrow(TypeError);
   });
 });
+
+
+describe('the key derivation is the core\'s', () => {
+  it('makes the same key from a phrase in JavaScript and in the core', () => {
+    // The page and a plugin must make one key from one phrase, or a mark made in a DAW would not read in the
+    // page. The core owns the derivation; this holds the JavaScript copy equal to it.
+    for (const phrase of ['', 'a', 'a phrase', 'fluidmark', 'ünïcödé phrase \u{1F3B5}']) {
+      const js = keyFromText(phrase);
+      const viaCore = core.keyFromText(new TextEncoder().encode(phrase));
+      expect(BigInt(viaCore.hi) * 2n ** 32n + BigInt(viaCore.lo), `phrase ${JSON.stringify(phrase)}`).toBe(js);
+    }
+  });
+});

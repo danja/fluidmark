@@ -28,6 +28,14 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
 
 ## 1. Checks that need a person
 
+- [ ] **Try the Mark plugin in REAPER.** `npm run build:vst`, then `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/` and
+      rescan. Put **FluidMark** last in the master chain, type an identifier in the plugin window (click the field, type,
+      Tab to the key field), play, and bounce. Then `node bin/mark.js --in bounce.wav --read` (with `--key` if you gave
+      one) should print the identifier. Things to watch for and tell me: whether the window opens and the text fields
+      take typing and Backspace and paste, whether Space still plays and stops while a field has focus, whether the
+      latency is compensated (a track with the plugin on should stay aligned with one without), whether a bounce and a
+      second bounce are identical, and whether a long bounce reads. This is the first time it has met a real host.
+
 - [ ] **Listen to the port, against the original.** Run the reference encoder and fluidmark's, play both against the same
       unprocessed audio, and say whether they sound like the same thing. The comparison needs two people who know what the
       reference is supposed to sound like, which is one. Nothing in the suite can hear anything, and a port that decodes

@@ -532,6 +532,27 @@ export function createCore(instance) {
     }
   }
 
+  /** The core's key for a phrase, as `{ lo, hi }`. Empty is the public default. */
+  function keyFromText(bytes) {
+    if (!(bytes instanceof Uint8Array)) throw new TypeError('keyFromText needs a Uint8Array');
+    const text = createBuffer(Math.max(1, bytes.length));
+    try {
+      fillBytes(text, bytes);
+      check(e.core_buffer_set_len(text.ptr, bytes.length), 'core_buffer_set_len');
+      const halves = createBuffer(2);
+      try {
+        // Two u32 out-parameters in the module's own memory.
+        check(e.core_key_from_text(text.data, bytes.length, halves.data, halves.data + 4), 'core_key_from_text');
+        const view = new Uint32Array(memory.buffer, halves.data, 2);
+        return { lo: view[0], hi: view[1] };
+      } finally {
+        destroyBuffer(halves);
+      }
+    } finally {
+      destroyBuffer(text);
+    }
+  }
+
   /**
    * Apply one attack to a buffer, in place.
    *
@@ -593,6 +614,7 @@ export function createCore(instance) {
     ssEmbedChannels,
     ssDetectChannels,
     nmr,
+    keyFromText,
     attack,
     destroy,
   };
