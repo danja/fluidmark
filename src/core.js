@@ -409,6 +409,85 @@ export function createCore(instance) {
   }
 
   /**
+   * Channels into one core buffer, planar, without building the planar array first.
+   *
+   * The wrapper used to concatenate the channels into a new array and copy that into the core,
+   * which is two copies of the track before the core has done anything. This writes each channel
+   * to its place in the core's buffer directly. Views are taken after the buffer exists, because
+   * allocating it may have grown the memory and detached any earlier one.
+   */
+  function fillChannels(buffer, channelData) {
+    const frames = channelData[0].length;
+    const total = frames * channelData.length;
+    channelData.forEach((channel, c) => {
+      samples(buffer, total).set(channel, c * frames);
+    });
+    check(e.core_buffer_set_len(buffer.ptr, total), 'core_buffer_set_len');
+    return { frames, total };
+  }
+
+  /**
+   * `ssEmbed` for an array of channels. Returns an array of new `Float32Array`s, one per channel.
+   * Peak memory is the input, the core's copy and the output, with nothing planar in between.
+   */
+  function ssEmbedChannels(channelData, frame, key, sampleRate, strengthDb) {
+    if (!Array.isArray(channelData) || channelData.length === 0 || !channelData.every((c) => c instanceof Float32Array)) {
+      throw new TypeError('ssEmbedChannels needs an array of Float32Arrays');
+    }
+    if (!(frame instanceof Uint8Array)) {
+      throw new TypeError('ssEmbedChannels needs the frame as a Uint8Array');
+    }
+    const channels = channelData.length;
+    const frames = channelData[0].length;
+    if (channelData.some((c) => c.length !== frames) || frames === 0) {
+      throw new RangeError('the channels are empty or not the same length');
+    }
+    const audioBuffer = createBuffer(frames * channels);
+    const frameBuffer = createBuffer(Math.max(1, frame.length));
+    try {
+      fillChannels(audioBuffer, channelData);
+      fillBytes(frameBuffer, frame);
+      check(
+        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels),
+        'core_ss_embed',
+      );
+      const total = frames * channels;
+      return channelData.map((_, c) => samples(audioBuffer, total).slice(c * frames, (c + 1) * frames));
+    } finally {
+      destroyBuffer(frameBuffer);
+      destroyBuffer(audioBuffer);
+    }
+  }
+
+  /** `ssDetect` for an array of channels, with the same saving. */
+  function ssDetectChannels(channelData, key, sampleRate) {
+    if (!Array.isArray(channelData) || channelData.length === 0 || !channelData.every((c) => c instanceof Float32Array)) {
+      throw new TypeError('ssDetectChannels needs an array of Float32Arrays');
+    }
+    const channels = channelData.length;
+    const frames = channelData[0].length;
+    if (channelData.some((c) => c.length !== frames) || frames === 0) {
+      throw new RangeError('the channels are empty or not the same length');
+    }
+    const audioBuffer = createBuffer(frames * channels);
+    const outBuffer = createBuffer(SS_FRAME_CAPACITY);
+    try {
+      fillChannels(audioBuffer, channelData);
+      const code = e.core_ss_detect(
+        audioBuffer.ptr, sampleRate, key.lo, key.hi, channels, outBuffer.ptr, scratch, scratch2,
+      );
+      if (code < 0) check(code, 'core_ss_detect');
+      const confidence = doubleOut(memory, scratch)[0];
+      const speed = doubleOut(memory, scratch2)[0];
+      const status = code === 0 ? 'verified' : code === 2 ? 'damaged' : 'none';
+      return { status, frame: readBytes(outBuffer), confidence, speed };
+    } finally {
+      destroyBuffer(outBuffer);
+      destroyBuffer(audioBuffer);
+    }
+  }
+
+  /**
    * Apply one attack to a buffer, in place.
    *
    * `id` is one of the `ATTACKS` values in `src/attacks.js`, `param` means what that table says
@@ -466,6 +545,8 @@ export function createCore(instance) {
     ssMinSamples,
     ssEmbed,
     ssDetect,
+    ssEmbedChannels,
+    ssDetectChannels,
     attack,
     destroy,
   };

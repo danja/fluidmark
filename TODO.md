@@ -138,8 +138,8 @@ measured baseline.
       ffmpeg is what the harness does; a tool that does it for `mark.js` is small.
 - [ ] **Output at the input's bit depth.** A 24-bit master is written back 16-bit. The page and the tool say so,
       and a mastering chain would not want it. Needs 24-bit and float writing, and a decision about dither.
-- [ ] **Lower peak memory.** A six-minute stereo file needs about 1.2 GB to mark, mostly copies of the channels.
-      Embedding in chunks with overlap would cut it, and the page would then hold longer tracks on a phone.
+- [x] **Lower peak memory**, from about 1.2 GB to 0.6 GB for six minutes of stereo: streaming embed, marking in
+      place, no planar copy in JS. Reading could shed more (the whitened and band-limited copies).
 - [ ] **Test the page on a phone-sized memory budget**, with a long stereo file. Untested; a person on a phone.
 - [ ] **Speed.** About 0.6 s to embed and 1.7 s to read a minute in Wasm. Reading is dominated by the
       whitening filter and the per-block FFTs; neither has been profiled.

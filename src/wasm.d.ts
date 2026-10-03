@@ -37,6 +37,15 @@ export interface Core {
    * Look for a spread-spectrum mark. `frame` is the bytes as read and is not to be believed unless
    * `status` is `'verified'`.
    */
+  /** `ssEmbed` for one array per channel, without building the planar array first. */
+  ssEmbedChannels(channelData: Float32Array[], frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number): Float32Array[];
+  /** `ssDetect` for one array per channel. */
+  ssDetectChannels(channelData: Float32Array[], key: { lo: number; hi: number }, sampleRate: number): {
+    status: 'verified' | 'damaged' | 'none';
+    frame: Uint8Array;
+    confidence: number;
+    speed: number;
+  };
   ssDetect(audio: Float32Array, key: { lo: number; hi: number }, sampleRate: number, channels?: number): {
     status: 'verified' | 'damaged' | 'none';
     frame: Uint8Array;

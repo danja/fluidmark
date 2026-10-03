@@ -314,9 +314,13 @@ Measured on the 60 second stereo excerpt of the quiet recording, key 2, -20 dB: 
 including `stereo to mono (fold)`, `one channel only`, and both MP3 rows with two channels kept through
 ffmpeg. The row lost is pink noise at 20 dB SNR.
 
-A six-minute stereo file marks in about 2.7 seconds and reads in about 1.7 in Wasm under Node, and the
-marker's peak memory is about 1.2 GB, which is a lot for a phone and not a limit anyone has tested. Most of
-it is copies of the channels; chunked embedding would cut it, and is in `TODO.md`.
+A six-minute stereo file marks in about 2.3 seconds and reads in about 1.5 in Wasm under Node, with a peak of
+about 0.6 GB for either. The embedder streams: the host's band level is measured in one pass into a few
+floats per thousand samples, the carrier is computed where it is wanted (resampled on the fly for a track
+not at 44.1 kHz), and the mark is added in place. It matches the earlier whole-vector embedder bit for bit
+at 44.1, 48 and 22.05 kHz, which a test keeps true. Before that the peak was about 1.2 GB. What is left is
+mostly the copies the page and the tool need anyway: the file, the decoded channels, the core's copy, and
+the marked result.
 
 ### Beyond the brief: speed, drift, harsher codecs, collusion
 

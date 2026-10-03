@@ -571,13 +571,12 @@ pub unsafe extern "C" fn core_ss_embed(
         return CORE_ERR_LENGTH;
     }
     let key = ((key_hi as u64) << 32) | key_lo as u64;
-    let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
+    // In place: the marker needs nothing the size of the track beyond the track, and a copy here
+    // would be the largest allocation in the call.
+    let samples = std::slice::from_raw_parts_mut(audio, audio_header.len as usize);
     let bytes = std::slice::from_raw_parts(frame as *const u8, frame_header.len as usize);
-    match spread::embed_planar(samples, channels as usize, bytes, key, sample_rate, strength_db) {
-        Ok(marked) => {
-            std::ptr::copy_nonoverlapping(marked.as_ptr(), audio, marked.len());
-            CORE_OK
-        }
+    match spread::embed_planar_in_place(samples, channels as usize, bytes, key, sample_rate, strength_db) {
+        Ok(()) => CORE_OK,
         Err(e) => spread_error(e),
     }
 }

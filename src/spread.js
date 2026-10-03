@@ -49,9 +49,9 @@ export function keyFromText(text) {
   return hash;
 }
 
-/** Channels as the core wants them: one planar array, and how many channels it holds. */
-function lay(audio) {
-  if (audio instanceof Float32Array) return { planar: audio, channels: 1, frames: audio.length };
+/** Check what was passed is one array or one array per channel, and say how long. */
+function shape(audio) {
+  if (audio instanceof Float32Array) return { channels: 1, frames: audio.length };
   if (!Array.isArray(audio) || audio.length === 0 || !audio.every((c) => c instanceof Float32Array)) {
     throw new TypeError('audio is a Float32Array, or an array of one Float32Array per channel');
   }
@@ -59,15 +59,14 @@ function lay(audio) {
   if (audio.some((c) => c.length !== frames)) {
     throw new RangeError('the channels are not the same length');
   }
-  if (audio.length === 1) return { planar: audio[0], channels: 1, frames };
-  const planar = new Float32Array(frames * audio.length);
-  audio.forEach((c, i) => planar.set(c, i * frames));
-  return { planar, channels: audio.length, frames };
+  return { channels: audio.length, frames };
 }
 
-/** Planar back to one array per channel. */
-function unlay(planar, channels, frames) {
-  return Array.from({ length: channels }, (_, i) => planar.slice(i * frames, (i + 1) * frames));
+function detectCore(core, audio, key, sampleRate) {
+  shape(audio);
+  return Array.isArray(audio)
+    ? core.ssDetectChannels(audio, splitKey(key), sampleRate)
+    : core.ssDetect(audio, splitKey(key), sampleRate, 1);
 }
 
 /**
@@ -92,7 +91,7 @@ export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, fla
     throw new TypeError('sampleRate is required: the mark is defined at 44.1 kHz and the core resamples to it');
   }
   const bytes = frame(payload, flags);
-  const { planar, channels, frames } = lay(audio);
+  const { frames } = shape(audio);
   if (frames > MAX_EMBED_FRAMES) {
     throw new RangeError(
       `${frames} samples per channel is more than one call will mark (${MAX_EMBED_FRAMES}, about ` +
@@ -105,8 +104,12 @@ export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, fla
       `a ${payload.length} byte payload needs ${needed} samples per channel at ${sampleRate} Hz, have ${frames}`,
     );
   }
-  const marked = core.ssEmbed(planar, bytes, splitKey(key), sampleRate, strengthDb, channels);
-  return audio instanceof Float32Array ? marked : unlay(marked, channels, frames);
+  // One array per channel goes to the core without a planar copy in between, which is a copy of the
+  // whole track saved at the largest point. A single array is already one channel.
+  if (Array.isArray(audio)) {
+    return core.ssEmbedChannels(audio, bytes, splitKey(key), sampleRate, strengthDb);
+  }
+  return core.ssEmbed(audio, bytes, splitKey(key), sampleRate, strengthDb, 1);
 }
 
 /**
@@ -119,8 +122,7 @@ export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, fla
  */
 export function detectRaw(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   if (!Number.isFinite(sampleRate)) throw new TypeError('sampleRate is required');
-  const { planar, channels } = lay(audio);
-  return core.ssDetect(planar, splitKey(key), sampleRate, channels);
+  return detectCore(core, audio, key, sampleRate);
 }
 
 /**
@@ -141,8 +143,7 @@ export function detect(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   if (!Number.isFinite(sampleRate)) {
     throw new TypeError('sampleRate is required');
   }
-  const { planar, channels } = lay(audio);
-  const found = core.ssDetect(planar, splitKey(key), sampleRate, channels);
+  const found = detectCore(core, audio, key, sampleRate);
   if (found.status === 'none') return { ok: false, reason: 'none', confidence: found.confidence, speed: found.speed };
   if (found.status === 'damaged') {
     return { ok: false, reason: 'damaged', frame: found.frame, confidence: found.confidence, speed: found.speed };

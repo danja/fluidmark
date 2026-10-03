@@ -38,7 +38,7 @@
 
 use crate::ecc;
 use crate::fft::fft;
-use crate::filter::{highpass, lowpass};
+use crate::filter::{highpass, lowpass, BandPass};
 use crate::frame::{self, FrameError, HEADER_BYTES};
 use crate::lfs::splitmix64;
 use crate::resample;
@@ -203,36 +203,48 @@ fn stream(frame: &[u8], key: u64) -> Vec<f32> {
     bits
 }
 
-/// The host's level in the carrier's band, per sample.
+/// The host's block powers in the carrier's band, one per `ENV_BLOCK` samples, computed streaming.
 ///
-/// Block RMS, smoothed over three blocks, interpolated linearly between block centres so the
-/// mark's level changes smoothly rather than in steps, which would be audible as a click train.
-fn host_level(samples: &[f32], sample_rate: f32) -> Vec<f32> {
-    let band = lowpass(&highpass(samples, BAND_LO, sample_rate), BAND_HI, sample_rate);
-    let blocks = samples.len().div_ceil(ENV_BLOCK);
-    let power: Vec<f32> = (0..blocks)
-        .map(|b| {
-            let chunk = &band[b * ENV_BLOCK..((b + 1) * ENV_BLOCK).min(band.len())];
-            chunk.iter().map(|x| x * x).sum::<f32>() / chunk.len() as f32
-        })
-        .collect();
-    let level: Vec<f32> = (0..blocks)
+/// The band-limited host is never held: it is measured a block at a time as it goes by. An earlier
+/// version built it whole, and with the copies around it that was most of the memory a long track
+/// needed to be marked.
+fn band_power(samples: &[f32], sample_rate: f32) -> Vec<f32> {
+    let mut band = BandPass::new(BAND_LO, BAND_HI, sample_rate);
+    let mut power = Vec::with_capacity(samples.len().div_ceil(ENV_BLOCK));
+    for chunk in samples.chunks(ENV_BLOCK) {
+        let mut sum = 0.0f32;
+        for &x in chunk {
+            let b = band.process(x);
+            sum += b * b;
+        }
+        power.push(sum / chunk.len() as f32);
+    }
+    power
+}
+
+/// The level at each block, smoothed over three.
+fn level_blocks(power: &[f32]) -> Vec<f32> {
+    let blocks = power.len();
+    (0..blocks)
         .map(|b| {
             let lo = b.saturating_sub(1);
             let hi = (b + 1).min(blocks - 1);
             let span = &power[lo..=hi];
             (span.iter().sum::<f32>() / span.len() as f32).sqrt()
         })
-        .collect();
-    (0..samples.len())
-        .map(|i| {
-            let at = (i as f32 - ENV_BLOCK as f32 / 2.0) / ENV_BLOCK as f32;
-            let b0 = at.floor().max(0.0) as usize;
-            let b1 = (b0 + 1).min(blocks - 1);
-            let t = (at - b0 as f32).clamp(0.0, 1.0);
-            level[b0.min(blocks - 1)] * (1.0 - t) + level[b1] * t
-        })
         .collect()
+}
+
+/// The level at sample `i`, interpolated linearly between block centres so the mark's level changes
+/// smoothly rather than in steps, which would be audible as a click train.
+#[inline]
+fn level_at(level: &[f32], i: usize) -> f32 {
+    let blocks = level.len();
+    let at = (i as f32 - ENV_BLOCK as f32 / 2.0) / ENV_BLOCK as f32;
+    let b0 = at.floor().max(0.0) as usize;
+    let b1 = (b0 + 1).min(blocks - 1);
+    let t = (at - b0 as f32).clamp(0.0, 1.0);
+    level[b0.min(blocks - 1)] * (1.0 - t) + level[b1] * t
 }
 
 /// Add the mark to `samples`, returning the marked copy.
@@ -247,6 +259,24 @@ pub fn embed(
     sample_rate: f64,
     strength_db: f64,
 ) -> Result<Vec<f32>, SpreadError> {
+    let mut out = samples.to_vec();
+    embed_in_place(&mut out, frame_bytes, key, sample_rate, strength_db)?;
+    Ok(out)
+}
+
+/// `embed`, writing the mark into `samples` itself.
+///
+/// Nothing the size of the track is allocated beyond the track: the host is measured in one pass,
+/// into a few floats per thousand samples, and the mark is then computed sample by sample as it is
+/// added, which can be done in place because each output reads only its own input. Nothing is
+/// touched when an error is returned.
+pub fn embed_in_place(
+    samples: &mut [f32],
+    frame_bytes: &[u8],
+    key: u64,
+    sample_rate: f64,
+    strength_db: f64,
+) -> Result<(), SpreadError> {
     if !(sample_rate >= 8000.0 && sample_rate <= 192_000.0) || !strength_db.is_finite() {
         return Err(SpreadError::BadRate);
     }
@@ -260,19 +290,26 @@ pub fn embed(
     }
 
     let period = carrier(key);
-    let at_mark_rate: Vec<f32> = (0..n44)
-        .map(|i| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS])
-        .collect();
-    let mut wave = resample::resample(&at_mark_rate, RATE, sample_rate);
-    wave.resize(samples.len(), 0.0);
+    let carrier_at = |i: usize| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS];
 
-    let level = host_level(samples, sample_rate as f32);
+    let level = level_blocks(&band_power(samples, sample_rate as f32));
     let gain = 10f32.powf(strength_db as f32 / 20.0);
-    Ok(samples
-        .iter()
-        .zip(wave.iter().zip(level.iter()))
-        .map(|(&x, (&w, &l))| x + gain * l * w)
-        .collect())
+
+    if (sample_rate - RATE).abs() < 1e-9 {
+        for (i, x) in samples.iter_mut().enumerate() {
+            *x += gain * level_at(&level, i) * carrier_at(i);
+        }
+    } else {
+        // The mark is defined at 44.1 kHz and the track is not, so each output sample is the
+        // carrier at 44.1 kHz resampled, computed where it is needed. Past the end of what the
+        // resampler produces the mark is silence, as it always was.
+        let resampler = resample::Resampler::new(n44, RATE, sample_rate).ok_or(SpreadError::BadRate)?;
+        for (i, x) in samples.iter_mut().enumerate() {
+            let w = if i < resampler.out_len() { resampler.sample_at(i, &carrier_at) } else { 0.0 };
+            *x += gain * level_at(&level, i) * w;
+        }
+    }
+    Ok(())
 }
 
 /// Coefficients of a prediction-error filter `1 + a1 z^-1 + ... + ap z^-p`, fitted to `samples`
@@ -810,12 +847,26 @@ pub fn embed_planar(
     sample_rate: f64,
     strength_db: f64,
 ) -> Result<Vec<f32>, SpreadError> {
-    let frames = embed_frames(samples.len(), channels)?;
-    let mut out = Vec::with_capacity(samples.len());
-    for channel in samples.chunks_exact(frames.max(1)) {
-        out.extend(embed(channel, frame_bytes, key, sample_rate, strength_db)?);
-    }
+    let mut out = samples.to_vec();
+    embed_planar_in_place(&mut out, channels, frame_bytes, key, sample_rate, strength_db)?;
     Ok(out)
+}
+
+/// `embed_planar`, in place. A refusal comes before any channel is touched, since every reason for
+/// one is the same for all channels.
+pub fn embed_planar_in_place(
+    samples: &mut [f32],
+    channels: usize,
+    frame_bytes: &[u8],
+    key: u64,
+    sample_rate: f64,
+    strength_db: f64,
+) -> Result<(), SpreadError> {
+    let frames = embed_frames(samples.len(), channels)?;
+    for channel in samples.chunks_exact_mut(frames.max(1)) {
+        embed_in_place(channel, frame_bytes, key, sample_rate, strength_db)?;
+    }
+    Ok(())
 }
 
 /// Look for a mark in planar audio, by reading the average of its channels.
@@ -1195,5 +1246,99 @@ mod tests {
         assert_eq!(embed_frames(MAX_EMBED_FRAMES + 1, 1), Err(SpreadError::TooLong));
         assert_eq!(embed_frames(2 * MAX_EMBED_FRAMES, 2), Ok(MAX_EMBED_FRAMES));
         assert_eq!(embed_frames(2 * MAX_EMBED_FRAMES + 2, 2), Err(SpreadError::TooLong));
+    }
+
+    // The embedder as it was before it streamed: whole vectors for the carrier, the resampled
+    // carrier, the band-limited host and the level. Kept so that streaming is checked against what it
+    // replaced, bit for bit, rather than against itself.
+    /// The host's level in the carrier's band, per sample.
+    ///
+    /// Block RMS, smoothed over three blocks, interpolated linearly between block centres so the
+    /// mark's level changes smoothly rather than in steps, which would be audible as a click train.
+    fn host_level_reference(samples: &[f32], sample_rate: f32) -> Vec<f32> {
+        let band = lowpass(&highpass(samples, BAND_LO, sample_rate), BAND_HI, sample_rate);
+        let blocks = samples.len().div_ceil(ENV_BLOCK);
+        let power: Vec<f32> = (0..blocks)
+            .map(|b| {
+                let chunk = &band[b * ENV_BLOCK..((b + 1) * ENV_BLOCK).min(band.len())];
+                chunk.iter().map(|x| x * x).sum::<f32>() / chunk.len() as f32
+            })
+            .collect();
+        let level: Vec<f32> = (0..blocks)
+            .map(|b| {
+                let lo = b.saturating_sub(1);
+                let hi = (b + 1).min(blocks - 1);
+                let span = &power[lo..=hi];
+                (span.iter().sum::<f32>() / span.len() as f32).sqrt()
+            })
+            .collect();
+        (0..samples.len())
+            .map(|i| {
+                let at = (i as f32 - ENV_BLOCK as f32 / 2.0) / ENV_BLOCK as f32;
+                let b0 = at.floor().max(0.0) as usize;
+                let b1 = (b0 + 1).min(blocks - 1);
+                let t = (at - b0 as f32).clamp(0.0, 1.0);
+                level[b0.min(blocks - 1)] * (1.0 - t) + level[b1] * t
+            })
+            .collect()
+    }
+
+    fn embed_reference(
+        samples: &[f32],
+        frame_bytes: &[u8],
+        key: u64,
+        sample_rate: f64,
+        strength_db: f64,
+    ) -> Result<Vec<f32>, SpreadError> {
+        if !(sample_rate >= 8000.0 && sample_rate <= 192_000.0) || !strength_db.is_finite() {
+            return Err(SpreadError::BadRate);
+        }
+        if frame_bytes.len() < HEADER_BYTES {
+            return Err(SpreadError::BadFrame);
+        }
+        let bits = stream(frame_bytes, key);
+        let n44 = ((samples.len() as f64) * RATE / sample_rate).ceil() as usize;
+        if n44 < bits.len() * CHIPS {
+            return Err(SpreadError::TooShort);
+        }
+    
+        let period = carrier(key);
+        let at_mark_rate: Vec<f32> = (0..n44)
+            .map(|i| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS])
+            .collect();
+        let mut wave = resample::resample(&at_mark_rate, RATE, sample_rate);
+        wave.resize(samples.len(), 0.0);
+    
+        let level = host_level_reference(samples, sample_rate as f32);
+        let gain = 10f32.powf(strength_db as f32 / 20.0);
+        Ok(samples
+            .iter()
+            .zip(wave.iter().zip(level.iter()))
+            .map(|(&x, (&w, &l))| x + gain * l * w)
+            .collect())
+    }
+
+    #[test]
+    fn marking_in_place_matches_the_whole_vector_embedder_bit_for_bit() {
+        for rate in [44_100.0f64, 48_000.0, 22_050.0] {
+            let host = music(seconds_needed() * 1.3, rate, 5);
+            let reference = embed_reference(&host, &payload(), KEY, rate, DEFAULT_STRENGTH_DB).unwrap();
+            let streamed = embed(&host, &payload(), KEY, rate, DEFAULT_STRENGTH_DB).unwrap();
+            assert_eq!(reference.len(), streamed.len(), "{rate} Hz");
+            let differing = reference.iter().zip(&streamed).filter(|(a, b)| a != b).count();
+            assert_eq!(differing, 0, "{rate} Hz: {differing} samples differ");
+        }
+    }
+
+    #[test]
+    fn a_refused_embed_leaves_the_audio_alone() {
+        let mut host = music(5.0, RATE, 1);
+        let before = host.clone();
+        assert_eq!(embed_in_place(&mut host, &payload(), KEY, RATE, -20.0), Err(SpreadError::TooShort));
+        assert_eq!(host, before);
+        let mut planar = [before.clone(), before.clone()].concat();
+        let copy = planar.clone();
+        assert_eq!(embed_planar_in_place(&mut planar, 2, &payload(), KEY, RATE, -20.0), Err(SpreadError::TooShort));
+        assert_eq!(planar, copy);
     }
 }

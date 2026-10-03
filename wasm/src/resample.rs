@@ -24,42 +24,62 @@ fn sinc(x: f64) -> f64 {
     }
 }
 
-/// Resample `samples` from `from_rate` to `to_rate`.
-///
-/// The output length is `round(len * to / from)`. When downsampling, the kernel is stretched so
-/// it band-limits to the new Nyquist as it interpolates, rather than aliasing.
-pub fn resample(samples: &[f32], from_rate: f64, to_rate: f64) -> Vec<f32> {
-    if samples.is_empty() || !(from_rate > 0.0) || !(to_rate > 0.0) {
-        return Vec::new();
-    }
-    if (from_rate - to_rate).abs() < 1e-9 {
-        return samples.to_vec();
-    }
-    let ratio = to_rate / from_rate;
-    let out_len = (samples.len() as f64 * ratio).round().max(1.0) as usize;
-    // Cutoff as a fraction of the input rate, with a little margin under the new Nyquist.
-    let cutoff = ratio.min(1.0) * 0.95;
-    let stretch = 1.0 / ratio.min(1.0);
-    let reach = (HALF_WIDTH as f64 * stretch).ceil() as isize;
+/// The kernel and geometry of one rate conversion, so output samples can be computed one at a time
+/// from a source that is never held whole. The embedder resamples a carrier it can compute at any
+/// index, and building that carrier as a vector first was a copy of the track for nothing.
+pub struct Resampler {
+    ratio: f64,
+    in_len: usize,
+    out_len: usize,
+    reach: isize,
+    kernel: Vec<f64>,
+}
 
-    // The kernel is the same shape for every output sample, so it is tabulated once and
-    // interpolated. Computing a sine and a cosine per tap per sample made a three-minute track
-    // take seconds, and the detector resamples every file that is not already at 44.1 kHz.
-    let reach_f = reach as f64;
-    let kernel: Vec<f64> = (0..=KERNEL_STEPS)
-        .map(|i| {
-            let u = i as f64 / KERNEL_STEPS as f64;
-            cutoff * sinc(cutoff * u * reach_f) * 0.5 * (1.0 + (PI * u).cos())
+impl Resampler {
+    /// `None` for rates that are not positive or an input with nothing in it.
+    pub fn new(in_len: usize, from_rate: f64, to_rate: f64) -> Option<Self> {
+        if in_len == 0 || !(from_rate > 0.0) || !(to_rate > 0.0) {
+            return None;
+        }
+        let ratio = to_rate / from_rate;
+        // Cutoff as a fraction of the input rate, with a little margin under the new Nyquist. When
+        // downsampling, the kernel is stretched so it band-limits as it interpolates.
+        let cutoff = ratio.min(1.0) * 0.95;
+        let stretch = 1.0 / ratio.min(1.0);
+        let reach = (HALF_WIDTH as f64 * stretch).ceil() as isize;
+        let reach_f = reach as f64;
+        // The kernel is the same shape for every output sample, so it is tabulated once and
+        // interpolated. Computing a sine and a cosine per tap per sample made a three-minute track
+        // take seconds.
+        let kernel = (0..=KERNEL_STEPS)
+            .map(|i| {
+                let u = i as f64 / KERNEL_STEPS as f64;
+                cutoff * sinc(cutoff * u * reach_f) * 0.5 * (1.0 + (PI * u).cos())
+            })
+            .collect();
+        Some(Resampler {
+            ratio,
+            in_len,
+            out_len: (in_len as f64 * ratio).round().max(1.0) as usize,
+            reach,
+            kernel,
         })
-        .collect();
+    }
 
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let position = i as f64 / ratio;
+    pub fn out_len(&self) -> usize {
+        self.out_len
+    }
+
+    /// Output sample `i`, reading input samples through `get`, which is only called for indices
+    /// below the input length.
+    #[inline]
+    pub fn sample_at<F: Fn(usize) -> f32>(&self, i: usize, get: F) -> f32 {
+        let reach_f = self.reach as f64;
+        let position = i as f64 / self.ratio;
         let centre = position.floor() as isize;
         let mut acc = 0.0f64;
-        for k in (centre - reach + 1)..=(centre + reach) {
-            if k < 0 || k as usize >= samples.len() {
+        for k in (centre - self.reach + 1)..=(centre + self.reach) {
+            if k < 0 || k as usize >= self.in_len {
                 continue;
             }
             let u = (position - k as f64).abs() / reach_f;
@@ -69,11 +89,23 @@ pub fn resample(samples: &[f32], from_rate: f64, to_rate: f64) -> Vec<f32> {
             let at = u * KERNEL_STEPS as f64;
             let lo = at as usize;
             let t = at - lo as f64;
-            acc += samples[k as usize] as f64 * (kernel[lo] * (1.0 - t) + kernel[lo + 1] * t);
+            acc += get(k as usize) as f64 * (self.kernel[lo] * (1.0 - t) + self.kernel[lo + 1] * t);
         }
-        out.push(acc as f32);
+        acc as f32
     }
-    out
+}
+
+/// Resample `samples` from `from_rate` to `to_rate`.
+///
+/// The output length is `round(len * to / from)`.
+pub fn resample(samples: &[f32], from_rate: f64, to_rate: f64) -> Vec<f32> {
+    let Some(resampler) = Resampler::new(samples.len(), from_rate, to_rate) else {
+        return Vec::new();
+    };
+    if (from_rate - to_rate).abs() < 1e-9 {
+        return samples.to_vec();
+    }
+    (0..resampler.out_len()).map(|i| resampler.sample_at(i, |k| samples[k])).collect()
 }
 
 #[cfg(test)]
