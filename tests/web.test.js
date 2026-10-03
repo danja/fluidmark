@@ -63,7 +63,7 @@ describe('the page', () => {
   });
 
   it('has a title that says what it is', () => {
-    expect(html).toMatch(/<title>[^<]*fluidmark[^<]*<\/title>/);
+    expect(html).toMatch(/<title>[^<]*FluidMark[^<]*<\/title>/);
   });
 
   it('loads nothing from a third party', () => {
@@ -73,7 +73,10 @@ describe('the page', () => {
     // stylesheet or script. Not every href.
     const loaded = [
       ...[...html.matchAll(/\ssrc="(?:https?:)?\/\/[^"]+"/g)].map((m) => m[0]),
-      ...[...html.matchAll(/<link[^>]+href="(?:https?:)?\/\/[^"]+"/g)].map((m) => m[0]),
+      ...[...html.matchAll(/<link[^>]+href="(?:https?:)?\/\/[^"]+"/g)]
+        .map((m) => m[0])
+        // A canonical link names where the page lives; it does not load anything.
+        .filter((tag) => !/rel="canonical"/.test(tag)),
       ...[...html.matchAll(/<iframe\b/g)].map(() => '<iframe>'),
     ];
     expect(loaded, `these load from elsewhere: ${loaded}`).toEqual([]);
@@ -233,5 +236,60 @@ describe('what needs a browser and is not checked here', () => {
 describe('the other pages', () => {
   it('has a 404 page, because nginx references one', () => {
     expect(existsSync(www('404.html'))).toBe(true);
+  });
+
+  it('has every page the index links to, so a live site has no dead links', () => {
+    const linked = [...html.matchAll(/href="([a-z0-9_-]+\.html)"/g)].map((m) => m[1]);
+    expect(linked.length).toBeGreaterThan(0);
+    for (const page of linked) {
+      expect(existsSync(www(page)), `index.html links to ${page}, which does not exist`).toBe(true);
+    }
+  });
+});
+
+describe('the site is served under a path prefix', () => {
+  // strandz.it hosts this at /fluidmark/, so every URL the browser resolves has to be relative.
+  // A leading slash resolves to the host's root instead, and the 404 there is silent because the
+  // page still loads and only its module is missing.
+
+  const pages = ['index.html', '404.html', 'spec.html', 'applications.html'];
+
+  it('has no absolute paths in any page', () => {
+    for (const page of pages) {
+      const text = readFileSync(www(page), 'utf8');
+      const absolute = [
+        ...[...text.matchAll(/\ssrc="\//g)].map(() => 'src="/..."'),
+        ...[...text.matchAll(/<link[^>]+href="\//g)].map(() => 'link href="/..."'),
+      ];
+      expect(absolute, `${page} loads from the host root: ${absolute}`).toEqual([]);
+    }
+  });
+
+  it('has no absolute paths in the page script', () => {
+    const absolute = [
+      ...[...app.matchAll(/from '\//g)].map(() => "import from '/...'"),
+      ...[...app.matchAll(/import '\//g)].map(() => "import('/...')"),
+    ];
+    expect(absolute, `app.js loads from the host root: ${absolute}`).toEqual([]);
+  });
+
+  it('loads its modules and its stylesheet relatively', () => {
+    expect(html).toMatch(/href="style\.css"/);
+    expect(html).toMatch(/src="app\.js"/);
+    expect(app).toMatch(/from '\.\.\/src\/load-browser\.js'/);
+  });
+
+  it('states the canonical address, prefix included', () => {
+    // Behind a proxy that strips the prefix, the browser's own URL is not the canonical one.
+    expect(html).toContain('<link rel="canonical" href="https://strandz.it/fluidmark/"');
+  });
+
+  it('is named consistently across the pages', () => {
+    for (const page of pages) {
+      const text = readFileSync(www(page), 'utf8');
+      expect(text, `${page} does not use the capitalised name`).toMatch(/FluidMark/);
+      // The lowercase project name is fine in a repository path, not in a page title.
+      expect(text, `${page} says "fluidmark" in its heading`).not.toMatch(/<h1>fluidmark/);
+    }
   });
 });

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluidMark: how it works</title>
+    <meta name="description" content="How FluidMark puts an identifier into a music file and reads it back out." />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="canonical" href="https://strandz.it/fluidmark/spec.html" />
+  </head>
+  <body>
+    <header>
+      <h1>How FluidMark works</h1>
+      <nav aria-label="Sections"><a href="./">FluidMark</a></nav>
+    </header>
+
+    <main id="main">
+      <p>
+        Two schemes, and the difference between them matters more than anything else on this page.
+        Both put an identifier into a music file and both read it back. One is audible and one is
+        not.
+      </p>
+
+      <h2>The audible scheme</h2>
+      <p>
+        This is a port of WebBeeps, Danny Ayers' earlier system, which was live at
+        <a href="https://webbeep.it/">webbeep.it</a> from about 2011. It writes the identifier as
+        music: each character becomes a pair of tones, and the tones are added to the audio.
+      </p>
+      <p>
+        Each character is split into two nibbles. The high nibble picks a note from a table of
+        eight low frequencies between 261 and 440 Hz; the low nibble picks one of sixteen higher
+        frequencies between 523 and 1760 Hz. The two are sounded together, which makes a dual tone.
+        Tone length carries a second piece of information, so a character is read from two
+        consecutive time slots rather than one.
+      </p>
+      <p>
+        Reading it back is the same idea inverted. The decoder cuts the audio into slots, measures
+        the Goertzel power at each of the table frequencies in each slot, and reconstructs the
+        characters from which frequencies appeared and how long they ran.
+      </p>
+      <p>
+        <strong>It is audible.</strong> A tone at half the amplitude of a loud passage is
+        plainly audible. It is here because files marked with it exist and should keep reading, and
+        because it is the baseline the other scheme is measured against.
+      </p>
+
+      <h2>The inaudible scheme</h2>
+      <p>
+        The watermark scheme replaces the tones with a mark hidden in the samples themselves. The
+        payload is written into the low bit of a keyed selection of 16-bit samples, one bit per
+        sample, at positions chosen by a pseudorandom sequence from a secret key.
+      </p>
+      <p>
+        Because the positions are keyed rather than sequential, the payload does not sit in a
+        visible run of the file, and a reader needs the key to find it.
+      </p>
+      <p>
+        <strong>It is inaudible but not robust.</strong> Any processing that moves a sample moves
+        its low bit. Gain, resampling, dithering, filtering and lossy transcoding all destroy it:
+        the measured bit error rate after every one of them is close to 50%, which is to say
+        random. This is the expected result for a scheme of this family and it is why the scheme is
+        still being worked on.
+      </p>
+      <p>
+        The current state is measured, not claimed.
+        <code>npm run docker:check</code> runs the whole attack suite and prints a table.
+      </p>
+
+      <h2>How a reader tells "no mark" from "a mark"</h2>
+      <p>
+        This is the part that decides whether the system is safe to use. A reader handed an
+        unmarked file must be able to say so, rather than reporting whatever it managed to read.
+      </p>
+      <p>
+        Every payload is wrapped in a frame that begins with the four bytes
+        <code>FLMK</code>, then a version, flags, a length, and a CRC-16 of the payload. A reader
+        that does not find the magic has found nothing and says nothing was found. A reader that
+        finds the magic but whose checksum does not match says the file holds something damaged.
+        Those are different answers, and the page reports them differently, because "no mark here"
+        and "an empty identifier" are not the same thing to a person.
+      </p>
+      <p>
+        The checksum also catches a transposition, which a plain sum of bytes cannot: the sums of
+        <code>ab</code> and <code>ba</code> are equal, and the checksum of the frame is not.
+      </p>
+
+      <h2>The payload</h2>
+      <p>
+        The frame's payload is bytes, and what goes in them is a separate decision that has not
+        been made yet. The intention is a header declaring that a mark is present, some metadata,
+        then an identifying IRI, then arbitrary text, with the IRI as the part that is always
+        present and always reliable.
+      </p>
+
+      <h2>What happens to your file</h2>
+      <p>
+        Nothing. The audio is decoded in your browser, the codec runs in your browser, and the
+        result is a file your browser downloads. There is no upload and there is no server that
+        sees your music. The page makes no request to anywhere else at all.
+      </p>
+      <p>
+        The one thing that does not work yet: the inaudible scheme has no way for a reader to find
+        where the mark starts, so it is told how long the payload is. The page works around that by
+        trying the lengths that are plausible. A scheme with a synchronisation word would not need
+        to, and building one is the next piece of work.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        FluidMark, by Danny Ayers. <a href="./">The tool</a> &middot;
+        <a href="applications.html">Applications</a>
+      </p>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluidMark: applications</title>
+    <meta name="description" content="What FluidMark is for, and what it cannot yet do." />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="canonical" href="https://strandz.it/fluidmark/applications.html" />
+  </head>
+  <body>
+    <header>
+      <h1>Applications</h1>
+      <nav aria-label="Sections"><a href="./">FluidMark</a></nav>
+    </header>
+
+    <main id="main">
+      <p>
+        What an identifier hidden in a music file is for, and an honest note about what this
+        system can and cannot do today.
+      </p>
+
+      <h2 id="provenance">Provenance</h2>
+      <p>
+        A mark that says where a recording came from. If you release music and want to know where a
+        copy that turns up somewhere else was published first, the identifier is the thing that
+        answers it.
+      </p>
+      <p>
+        This is the case the project is built for, and it is also the case with the hardest
+        requirement: the mark has to survive being transcoded and re-encoded on the way, because
+        that is exactly what happens to a file between publication and a listener.
+      </p>
+
+      <h2 id="broadcast">Broadcast and podcast identifiers</h2>
+      <p>
+        A station identifier that travels with the audio rather than needing a separate stream
+        marker. WebBeeps was built with this in mind, which is where the idea of a spoken or tonal
+        identifier in a broadcast signal came from.
+      </p>
+
+      <h2 id="web">Linking a track back to a page</h2>
+      <p>
+        A short URL or IRI in the audio, so a listener who wants to know where a track came from
+        can be told without being told separately. This is what the original site was for, and it
+        is the smallest payload the inaudible scheme could carry if it became robust.
+      </p>
+
+      <h2 id="not">What this cannot do yet</h2>
+      <p>
+        Stated plainly, because a watermark that does not do what someone assumes is worse than one
+        that is honest about its limits.
+      </p>
+      <p>
+        <strong>The inaudible scheme does not survive processing.</strong> Gain, resampling,
+        dithering, filtering and lossy transcoding all destroy it. Measured, not assumed: its bit
+        error rate after each of those is close to 50%. A file you mark with it will read back
+        correctly on the file you just wrote and will not read back at all after almost anything
+        else has touched it.
+      </p>
+      <p>
+        <strong>The audible scheme survives less than you would like, and you can hear it.</strong>
+        It is not a watermark for a finished track.
+      </p>
+      <p>
+        <strong>It is not a DRM and not an access control.</strong> Nothing here prevents anyone
+        from removing a mark who wants to. It identifies a source; it does not enforce anything.
+      </p>
+      <p>
+        <strong>Stereo files are not handled.</strong> The work is in one channel, and a stereo file
+        is refused rather than half-read, because a partial answer to "what does this file say"
+        would be worse than none.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        FluidMark, by Danny Ayers. <a href="./">The tool</a> &middot;
+        <a href="spec.html">How it works</a>
+      </p>
+    </footer>
+  </body>
+</html>

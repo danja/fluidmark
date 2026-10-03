@@ -157,7 +157,7 @@ async function main() {
     const loaded = await evaluate(
       `(async () => {
         try {
-          const { loadCore } = await import(at('/src/load-browser.js'));
+          const { loadCore } = await import('${BASE}/src/load-browser.js');
           const core = await loadCore();
           const info = { abi: core.abiVersion(), bytes: core.memory.buffer.byteLength };
           core.destroy();
@@ -176,9 +176,9 @@ async function main() {
     const roundTrip = JSON.parse(
       await evaluate(
         `(async () => {
-          const { loadCore } = await import(at('/src/load-browser.js'));
-          const { mark, read } = await import(at('/src/mark.js'));
-          const { decodeWav, encodeWav } = await import(at('/src/wav.js'));
+          const { loadCore } = await import('${BASE}/src/load-browser.js');
+          const { mark, read } = await import('${BASE}/src/mark.js');
+          const { decodeWav, encodeWav } = await import('${BASE}/src/wav.js');
           const core = await loadCore();
           const rate = 22050;
           const n = rate;
@@ -200,9 +200,9 @@ async function main() {
     const steg = JSON.parse(
       await evaluate(
         `(async () => {
-          const { loadCore } = await import(at('/src/load-browser.js'));
-          const { embed, extract } = await import(at('/src/watermark.js'));
-          const { frame, unframe } = await import(at('/src/frame.js'));
+          const { loadCore } = await import('${BASE}/src/load-browser.js');
+          const { embed, extract } = await import('${BASE}/src/watermark.js');
+          const { frame, unframe } = await import('${BASE}/src/frame.js');
           const core = await loadCore();
           const rate = 44100, n = rate;
           const audio = new Float32Array(n);
