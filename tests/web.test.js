@@ -247,11 +247,11 @@ describe('the other pages', () => {
   });
 });
 
-describe('the site can be mounted at any path', () => {
-  // strandz.it serves this at its root today, beside /jigdaw/, which is somebody else's. Every URL
-  // the browser resolves stays relative anyway, so that moving the site under a prefix is a change
-  // to the proxy alone. A leading slash resolves to the host's root, and the 404 there is silent
-  // because the page still loads and only its module is missing.
+describe('the site is served under a path prefix', () => {
+  // strandz.it serves this at /fluidmark/. The root belongs to another app and /jigdaw/ to a
+  // third, so every URL the browser resolves has to be relative. A leading slash resolves to the
+  // host's root instead, and the 404 there is silent because the page still loads and only its
+  // module is missing.
 
   const pages = ['index.html', '404.html', 'spec.html', 'applications.html'];
 
@@ -280,14 +280,14 @@ describe('the site can be mounted at any path', () => {
     expect(app).toMatch(/from '\.\.\/src\/load-browser\.js'/);
   });
 
-  it('states the canonical address', () => {
-    // Behind a proxy the browser's own URL is not necessarily the canonical one.
-    expect(html).toContain('<link rel="canonical" href="https://strandz.it/"');
+  it('states the canonical address, prefix included', () => {
+    // Behind a proxy that strips the prefix, the browser's own URL is not the canonical one.
+    expect(html).toContain('<link rel="canonical" href="https://strandz.it/fluidmark/"');
   });
 
-  it('never claims the canonical address of what already lives on the domain', () => {
-    // /jigdaw/ is retained and is not this site's. A canonical link into it would tell a search
-    // engine this site is that one.
+  it('never claims the canonical address of what else lives on the domain', () => {
+    // /jigdaw/ is not this site's. A canonical link into it would tell a search engine this site
+    // is that one.
     for (const page of pages) {
       expect(readFileSync(www(page), 'utf8'), page).not.toMatch(/strandz\.it\/jigdaw/);
     }

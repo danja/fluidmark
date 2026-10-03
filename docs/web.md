@@ -155,20 +155,20 @@ screen reader.
   a payload, no mark found, and found-but-damaged.
 - **A file input is announced badly.** Show the chosen file's name and size next to it, in
   text, because on some browsers the input announces neither.
-- **The new site is `strandz.it`**, at the root of the domain. `/jigdaw/` already lives there and is retained, so
-  the proxy sends only what is not under it to the container (`deploy/proxy.conf`). The old `webbeep.it` is
-  mentioned in the pages as history, not linked as the home.
+- **The new site is `strandz.it/fluidmark/`.** The domain's root is another app's (a service on `127.0.0.1:6010`), and
+  `/jigdaw/` and `/diddums` are others again, so the site lives under a prefix and the proxy adds one `location`
+  (`deploy/proxy.conf`). The old `webbeep.it` is mentioned in the pages as history, not linked as the home.
 
 ## Before and after going live on strandz.it
 
-The domain already serves other material, and FluidMark now takes the root, so the check has two halves. The second is
-the one that is easy to forget, because nothing in the container can see it.
+The domain's vhost already serves other things, so the check has two halves, and the second is the one that is easy to
+forget because nothing in the container can see it.
 
-1. **FluidMark answers.** `/`, `/spec.html`, `/applications.html`, `/build/fluidmark_core.wasm` as `application/wasm`,
-   `/src/load-browser.js` as JavaScript, and an encode then a decode in a real browser, as above, against the domain
-   instead of `127.0.0.1:8080`.
+1. **FluidMark answers.** `/fluidmark/`, `/fluidmark/spec.html`, `/fluidmark/applications.html`,
+   `/fluidmark/build/fluidmark_core.wasm` as `application/wasm`, `/fluidmark/src/load-browser.js` as JavaScript, and an
+   encode then a decode in a real browser, as above, against the domain instead of `127.0.0.1:8080`.
+   `/fluidmark` without the slash must redirect, not return the other app's page.
 2. **What was there still answers, from what answered it.** Before the change, record the status, `content-type` and a
-   hash of the body for `/jigdaw/` and for every other path the domain serves, and compare after. `curl -sI` on the
-   directory is not enough: a proxy that now sends it to the container returns a 404 page that looks like a page.
-   Anything outside `/jigdaw/` that the domain served at its root is shadowed by the site and is gone unless it is
-   moved or given its own location.
+   hash of the body for `/`, `/jigdaw/`, `/diddums/` and `/api/update-feeds` (a GET is enough to see a status; do not
+   trigger a feed update to test it), and compare after. The change adds one location and should alter none of them. A
+   mismatch means the new location is matching something it should not.
