@@ -145,6 +145,10 @@ fluidmark_mark.vst3`; `npm run test:vst` runs the engine's tests under CTest.
   change mid-file reading as the first message at the start and the second at the end; **zero allocations on the
   audio thread through the swap**, counting the Rust core's too by wrapping malloc at link time; no step in the mark
   at the swap; bypass settling to the delayed dry signal; and a loop-style jump in the timeline.
+- **The DPF wrapper through DPF's own exporter** (`mark_plugin_tests`, CTest). `PluginExporter` is what every plugin
+  format uses to talk to a plugin, and DPF has a static target that compiles the plugin and framework into a test
+  program, so the wrapper runs without a host: latency reported, parameters and state, activation and reactivation,
+  `run()` in place with mixed block sizes writing a mark the core's reader verifies, and bypass as the delayed input.
 - **The DPF wrapper and the NanoVG UI** (`vst/mark/src/dpf/`): margin and bypass parameters, the identifier and key as
   state, latency reported to the host, creator `danja` and brand `Downspout`. The UI has the two text fields, the
   margin slider, bypass, and the readouts in words. Carla's discovery tool instantiates the bundle (two inputs, two

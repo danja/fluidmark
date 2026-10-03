@@ -89,6 +89,18 @@ if(FLUIDMARK_ENABLE_DPF AND EXISTS "${FLUIDMARK_DPF_DIR}/CMakeLists.txt")
         FILES_UI mark/src/dpf/MarkUI.cpp
     )
     target_link_libraries(fluidmark_mark-dsp PUBLIC fluidmark_mark_engine)
+    # The wrapper through DPF's own exporter, which every plugin format drives, so it runs without a host.
+    # DPF's static target compiles the plugin and its framework into the program itself, which is what a test needs.
+    add_executable(mark_plugin_tests
+        mark/tests/mark_plugin_tests.cpp
+        mark/src/dpf/MarkPlugin.cpp
+        "${FLUIDMARK_DPF_DIR}/distrho/DistrhoPluginMain.cpp")
+    target_compile_definitions(mark_plugin_tests PRIVATE DISTRHO_PLUGIN_TARGET_STATIC)
+    target_link_libraries(mark_plugin_tests PRIVATE fluidmark_mark_engine)
+    target_include_directories(mark_plugin_tests PRIVATE
+        "${FLUIDMARK_DPF_DIR}" "${FLUIDMARK_DPF_DIR}/distrho" "${FLUIDMARK_DPF_DIR}/distrho/src" mark/src/dpf)
+    add_test(NAME mark_plugin COMMAND mark_plugin_tests)
+
     target_include_directories(fluidmark_mark PUBLIC mark/include mark/src/dpf)
     target_include_directories(fluidmark_mark-ui PUBLIC mark/include mark/src/dpf)
 else()
