@@ -55,6 +55,11 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
       up to try one.
 
 ## 2. Tools that would help
+**`pluginval`, or the VST3 SDK's validator**, for the Mark plugin (`docs/vst.md`). It loads a built bundle the way a host
+does and tries the things hosts do that a test of the engine does not: odd block sizes, a sample-rate change in the middle,
+a state save and restore, parameter automation. Without it the only check of the wrapper is a person loading it in a DAW,
+which is slow and catches less. Not installed here; `carla` and `jackd` are, and REAPER is in use (there is a
+`vst-test.RPP` under `~/Music`), so the manual check has somewhere to happen in the meantime.
 
 **A DAW**, for the same reason as the item above: the plugin has to be tried in one, and
 installing and configuring a host is a person's action.

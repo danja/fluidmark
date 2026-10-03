@@ -162,20 +162,44 @@ measured baseline.
 - [x] **Stereo**, in the core, the WAV reader and writer, the harness, the tool and the page. Every channel carries
       the same stream and a read uses the average. `docs/steganography.md`.
 
-## Delivery 3: the VST plugin, later
+## Delivery 3: the VST plugins
 
-Not started, and deliberately so. C++ with DPF, following `~/github/downspout`: a portable core with no
-plugin-framework dependency, a thin DPF wrapper, a custom NanoVG UI, deterministic tests that run without a DAW. Read
-`~/github/downspout/docs/porting.md` first.
+Two plugins, kept apart (`docs/vst.md` explains why). **Mark**, an audio insert that embeds the spread-spectrum
+watermark in a mastering chain, is planned in `docs/vst.md` and is what the milestones below are. The MIDI plugin
+`AGENTS.md` describes, text in and a repeated pattern out, is the second and later one. C++ with DPF, following
+`~/github/downspout`: a portable core with no plugin-framework dependency, a thin DPF wrapper, a custom NanoVG UI,
+deterministic tests that run without a DAW.
 
-- [ ] **Link `libfluidmark_core.a` into the plugin.** Nothing to design: the ABI already accommodates it. Add the Rust
-      build to the plugin's CMake, link the staticlib, and call the same `extern "C"` functions the browser calls.
+**Mark**, in order, each ending in something that runs:
+
+- [ ] **1. A streaming embedder in the Rust core**, and make it the only embedder. A hop state machine, everything
+      preallocated, the carrier a function of stream position, a resampler that does not need the length, an exact
+      stated latency, and golden-vector equality with today's offline output (kept as the reference). The offline
+      call becomes a wrapper over it. The page and the tools gain with it: long files no longer need the whole track
+      in memory, and progress becomes possible.
+- [ ] **2. The C ABI for it** (create, reconfigure, process, latency, destroy), `docs/ffi.md`, and `link_check.cpp`
+      extended so a C++ program drives a stream. Settle the static-link flags here.
+- [ ] **3. The C++ engine and its CTest suite**, with no DPF and no DAW: bit equality, block-size independence, no
+      allocation in `process` (counted), exact latency, a round trip through `core_ss_detect`, parameter behaviour,
+      four sample rates, mono and stereo, and the model's verdict through `core_nmr`.
+- [ ] **4. A DPF wrapper with no UI**, building a VST3 (`vst/`, CMake, `DPF_ROOT` defaulting to downspout's copy).
+      A person loads it in REAPER and Carla (`HUMANS.md`).
+- [ ] **5. The NanoVG UI**: identifier and key entry (custom, NanoVG has none), margin, the readouts and the peak warning.
+- [ ] **6. Packaging and CI**, Linux first. macOS and Windows built and untested until someone has them.
+- [ ] **7. The listening check**, which decides the default margin the plugin ships with (`HUMANS.md`).
+- [ ] **The audibility model at 88.2 and 96 kHz.** The analysis frame has to scale to keep its resolution in Hz, and the
+      NMR table has to be re-measured there, since the whole audibility argument rests on the model.
+- [ ] **The payload for a plugin**: a bare identifier, or one plus a per-render serial. Open, and in the payload
+      format decision above. A serial traces a leak and is distinguishable per bounce; it also makes copies differ,
+      which the collusion measurements say costs the mark when copies are averaged.
+
+**The MIDI plugin**, later:
+
 - [ ] **The MIDI carrier design**, before any code. How text becomes musically plausible notes, using the
       constrained-choices approach rather than hashing text into pitches. This is the piece with the most open questions
       and the one `docs/steganography.md` flags as needing a model rather than a mapping.
 - [ ] **The core**, taking text and emitting a repeating pattern, with tests that run without a DAW.
 - [ ] **The DPF wrapper and the NanoVG UI**: text in, and the pattern visible so the user can tell it is music.
-- [ ] **The plugin installed and tried in a DAW**, which is a person (`HUMANS.md`).
 - [ ] **Metadata normalised to downspout's convention**, so the two sit together without looking like different projects.
 
 ## Verification
