@@ -1422,6 +1422,23 @@ mod tests {
     }
 
     #[test]
+    fn masked_marking_reads_and_sits_where_asked_at_every_rate_a_daw_uses() {
+        // The model's frame is a fixed 2048 samples, so at 96 kHz its bins are twice as wide in Hz and its
+        // time resolution twice as fine. Whether the mark still reads and still lands near the margin is the
+        // question, and it is measured here at each rate and not assumed from 44.1 kHz.
+        for rate in [44_100.0f64, 48_000.0, 88_200.0, 96_000.0] {
+            let host = music(seconds_needed() * 1.6, rate, 13);
+            let out = masked(&host, -6.0, rate);
+            let found = detect(&out, rate, KEY).unwrap();
+            assert_eq!(found.status, Status::Verified, "{rate} Hz: {found:?}");
+            let r = psycho::nmr(&host, &out, rate, 200).expect("judged");
+            eprintln!("RATE {rate}: mean {:.1} p95 {:.1} over {:.1}%", r.mean_db, r.p95_db, 100.0 * r.above_threshold);
+            assert!(r.mean_db < -3.0 && r.mean_db > -14.0, "{rate} Hz: mean {:.1} dB against a margin of -6", r.mean_db);
+            assert!(r.above_threshold < 0.02, "{rate} Hz: {:.1}% of cells over the threshold", 100.0 * r.above_threshold);
+        }
+    }
+
+    #[test]
     fn a_gain_change_is_survived() {
         let (_, out) = marked(seconds_needed() * 2.2);
         for db in [-6.0, 3.0] {

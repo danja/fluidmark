@@ -267,6 +267,45 @@ int main() {
         expect(atSwap < elsewhere * 1.5f, "no step in the mark at the swap (" + std::to_string(atSwap) + " against " + std::to_string(elsewhere) + ")");
     }
 
+    // ---- The rates a DAW project uses ---------------------------------------------------------------------
+    for (const double rate : {48000.0, 88200.0, 96000.0}) {
+        std::printf(" at %.0f Hz\n", rate);
+        MarkEngine e;
+        MarkSettings s;
+        s.identifier = idA;
+        s.key = "k";
+        e.configure(s);
+        e.prepare(rate, 2, 1024);
+        const std::size_t n = static_cast<std::size_t>(40.0 * rate);
+        Audio in{std::vector<float>(n), std::vector<float>(n)};
+        unsigned state = 7;
+        for (std::size_t i = 0; i < n; ++i) {
+            state = state * 1664525u + 1013904223u;
+            const float noise = (static_cast<float>(state >> 8) / 16777216.0f - 0.5f) * 0.04f;
+            const float t = static_cast<float>(i) / static_cast<float>(rate);
+            const float env = 0.5f + 0.5f * std::sin(2.0f * 3.14159265f * 0.37f * t);
+            in.left[i] = env * 0.25f * std::sin(2.0f * 3.14159265f * 196.0f * t) + noise;
+            in.right[i] = env * 0.25f * std::sin(2.0f * 3.14159265f * 247.0f * t) - noise;
+        }
+        const Audio out = run(e, in, {1024, 333, 480});
+        // Read it back at the rate it was written, with the core's reader.
+        uint32_t lo = 0, hi = 0;
+        core_key_from_text(reinterpret_cast<const uint8_t*>("k"), 1, &lo, &hi);
+        const std::size_t len = n - latency;
+        float* planar = core_buffer_new(static_cast<uint32_t>(len * 2));
+        float* data = core_buffer_data(planar);
+        std::memcpy(data, out.left.data() + latency, len * sizeof(float));
+        std::memcpy(data + len, out.right.data() + latency, len * sizeof(float));
+        core_buffer_set_len(planar, static_cast<uint32_t>(len * 2));
+        float* sink = core_buffer_new(70000);
+        double confidence = 0, speed = 0;
+        const int status = core_ss_detect(planar, rate, lo, hi, 2, sink, &confidence, &speed);
+        std::vector<uint8_t> frame(reinterpret_cast<const uint8_t*>(core_buffer_data(sink)), reinterpret_cast<const uint8_t*>(core_buffer_data(sink)) + 64);
+        expect(status == 0 && startsWith(frame, frameFor(idA)), "the mark the engine writes at this rate reads back");
+        core_buffer_free(planar);
+        core_buffer_free(sink);
+    }
+
     // ---- Bypass crossfades and then is the dry signal ---------------------------------------------------
     {
         std::printf(" bypass\n");

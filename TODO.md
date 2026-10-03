@@ -183,12 +183,12 @@ deterministic tests that run without a DAW.
 - [x] **4. A DPF wrapper**, building `build/vst/bin/fluidmark_mark.vst3`. Carla's discovery instantiates it.
 - [x] **5. A first NanoVG UI**: identifier and key entry, margin, bypass, readouts in words. Driven under Xvfb by
       `vst/scripts/ui-check.sh`. Not yet seen in a DAW.
-- [ ] **A person loads it in REAPER** (`HUMANS.md`): `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/`, rescan, put it last
-      in a chain, type an identifier, bounce, and read the bounce with `node bin/mark.js --read`.
+- [x] **A person loads it in REAPER**: done 2026-10-03. It loaded, a bounce read with `bin/mark.js --read`, and part of
+      it was listened to with no artifacts noticed. A full listen, with the checks in `docs/how-it-works.md`, is open.
 - [ ] **6. Packaging and CI**, Linux first. macOS and Windows built and untested until someone has them.
 - [ ] **7. The listening check**, which decides the default margin the plugin ships with (`HUMANS.md`).
-- [ ] **The audibility model at 88.2 and 96 kHz.** The analysis frame has to scale to keep its resolution in Hz, and the
-      NMR table has to be re-measured there, since the whole audibility argument rests on the model.
+- [x] **The mark at 88.2 and 96 kHz**: reads, and sits at the same modelled distance from the threshold (a Rust test and
+      the engine's CTest). Whether the model's audibility predictions hold at 96 kHz is a listening question.
 - [ ] **The payload for a plugin**: a bare identifier, or one plus a per-render serial. Open, and in the payload
       format decision above. A serial traces a leak and is distinguishable per bounce; it also makes copies differ,
       which the collusion measurements say costs the mark when copies are averaged.

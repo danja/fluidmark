@@ -156,8 +156,17 @@ fluidmark_mark.vst3`; `npm run test:vst` runs the engine's tests under CTest.
   clicking, typing and dragging, and fails on an assertion or an input that changed nothing. It found one
   (NanoVG asserts on drawing an empty string).
 
-**Not done, and not checkable here:** a person loading it in REAPER, which is the first thing that is left; the model
-at 88.2 and 96 kHz; macOS and Windows; CI; and a pluginval run. The UI has been seen only in a virtual X server.
+**Sample rates.** The mark writes, reads back and lands at the same modelled distance from the threshold at 44.1, 48,
+88.2 and 96 kHz: a Rust test measures the noise-to-mask ratio at each (mean about -7.3 dB for a -6 dB margin, none over
+the threshold) and the engine's CTest reads a 40 s stereo render back with the core's reader at 48, 88.2 and 96 kHz.
+That shows the shaping and the reader are rate-independent. It does not show that the model's predictions of what is
+audible hold at 96 kHz, where its fixed 2048-sample frame has bins twice as wide in Hz; that is a listening question.
+
+**Checked by a person:** it was loaded in REAPER, a bounce was read with `bin/mark.js`, and part of it was listened to
+with no artifacts noticed.
+
+**Not done, and not checkable here:** macOS and Windows; CI; and a pluginval run. The UI has been seen in REAPER and in a
+virtual X server.
 
 Install with `./install.sh` (builds, tests, copies the bundle to `~/.vst3`, replacing any old copy; `--no-test`, `--uninstall` and `VST3_DIR` are there), then rescan in the DAW.
 
