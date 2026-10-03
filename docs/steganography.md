@@ -421,6 +421,30 @@ the mark does not stay with the first one. Averaging two copies marked under dif
 both still read. Subtracting a copy of the original from a marked file leaves the mark itself, and no scheme
 that is read without the original prevents that.
 
+### Removal without the key
+
+The key stops a reader recovering the payload and, for an attacker, the first thing it was meant to stop. It
+does not hide that a mark is there, or what the carrier looks like, because the carrier is **one waveform
+repeated every 2048 samples**, multiplied by +1 or -1. Someone who knows that, and the scheme is published, can
+line a file up on a period by finding where consecutive blocks agree, stack the blocks with the signs that make
+them agree, and read the carrier off the stack: the music is different in every block and averages away, and the
+mark is the same in every one. `wasm/src/estimate.rs` does this with no key. On a synthetic host with a
+published level it recovers the carrier to a cosine of 0.99 with the true one (a test holds it above 0.9).
+
+What that lets an attacker do to the mark is a different question, and a harder one to measure. The harness
+runs a naive version: signs and alignment from the whitened audio, the carrier estimated again in the music's
+own band, and subtracted at the level the mark follows. On the quiet recording and on `loops` at -20 dB it takes
+out about a quarter to a third of the mark's energy along itself, the mark still reads, and the file ends 23 to
+28 dB below itself, which is about as far as the mark itself is from it, so the damage to the music is as large
+as the mark. **That is not a measure of resistance.** More passes made it worse, not better: the signs are
+fitted to the same blocks the carrier is then estimated from, so each pass takes out more of the music than of
+the mark. A careful attacker would hold blocks out, fit amplitude per passage, and iterate, and nothing here says
+they would fail. The honest reading is that the key is not what protects a mark from removal, that the one
+thing known is that its carrier can be recovered without it, and that a mark made of non-repeating keyed
+carriers, so that there is nothing to stack, is what would change that. It would also cost the reader the
+folding it finds the boundary, the speed and the bit timing with, which is why it has not been done. It is in
+`TODO.md`.
+
 ### What this does not say
 
 - **It does not say the mark is inaudible.** -20 dB relative to the in-band level of the host is a
@@ -429,10 +453,9 @@ that is read without the original prevents that.
   that is acceptable may well be below the level at which this reads. If it is, the scheme has to
   gain processing gain from somewhere else (longer bits, a stronger code, per-band weighting) before it
   is a result.
-- It does not say the scheme survives removal. The two removal rows are low-bit scrubs and mean
-  nothing for a spread-spectrum mark, so they are LSB-only in the harness now. A keyless attack on
-  this scheme (notch the band, whiten and subtract, collusion between differently-marked copies) is
-  not measured.
+- It does not say the scheme survives removal. The two scrub rows are LSB-only. The keyless estimation attack
+  above is naive and did not remove the mark, which proves nothing about a careful one, and the carrier can
+  be recovered without the key.
 - Two hosts, one payload size, and one key per table. The mark's level follows the host's in-band RMS per 1024-sample
   block, which is a crude stand-in for a masking threshold and not a model of one.
 - Reading takes about 1.7 s for the first three minutes of any file, which is the most it looks at, and a

@@ -129,6 +129,12 @@ measured baseline.
       reading still works). Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
       the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
+- [ ] **Non-repeating carriers**, so that a mark cannot be estimated from the audio and subtracted. The carrier is one
+      waveform repeated every 2048 samples and its estimate is recoverable with no key. A keyed carrier that differs
+      from block to block (a keyed stream, not a repeat) has nothing to stack, but the reader finds the boundary, the
+      speed and the bit timing by folding the file onto one period, and would need another way to: correlating
+      against the keyed stream at every offset, with the copy and block index unknown after a crop. A real redesign.
+      Measure first with a careful estimation attack (hold blocks out, fit amplitude per passage).
 - [ ] **A removal attack for the spread scheme.** The scrub rows are LSB-only now. Keyless: notch the band,
       whiten and subtract, a re-synthesis through a codec at a low rate, and collusion between two
       differently-marked copies. Each is a row in the table with its own figure.

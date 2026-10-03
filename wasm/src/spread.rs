@@ -1197,12 +1197,6 @@ mod tests {
     }
 
 
-    fn snr_db(reference: &[f32], other: &[f32]) -> f64 {
-        let signal: f64 = reference.iter().map(|&v| (v as f64).powi(2)).sum();
-        let noise: f64 = reference.iter().zip(other).map(|(&a, &b)| ((a - b) as f64).powi(2)).sum();
-        10.0 * (signal / noise.max(1e-30)).log10()
-    }
-
     #[test]
     fn someone_with_no_key_can_recover_the_carrier_from_the_audio_alone() {
         // A characterisation, not a goal. The carrier is one waveform repeated, so stacking blocks with
