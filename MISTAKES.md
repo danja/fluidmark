@@ -7,6 +7,17 @@ Newest first within a theme. Some entries are lessons carried over from sibling 
 reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
 what would notice it happening.
 
+## A script used a global that only the newest Node has
+
+**What happened.** CI's web check died with `WebSocket is not defined` in `www/browser-check.js`. `package.json` says Node
+20 or later; the global `WebSocket` arrived in Node 22, and the development machine runs 25.
+
+**Root cause.** Only ever run on one Node version, newer than the declared minimum. The same class as the entry below: it
+passed on the machine that wrote it.
+
+**Prevention.** Run scripts under the declared minimum (`npx -y node@20 ...`) before claiming support for it. The script
+now falls back to the `ws` devDependency.
+
 ## A test read gitignored reference files and passed only on the one machine that had them
 
 **What happened.** The first CI run failed in `tests/mp3.test.js` with ENOENT on `reference/WebBeep/www/audio/`. The

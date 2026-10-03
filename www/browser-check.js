@@ -100,7 +100,9 @@ async function main() {
     // would be a dependency nobody wants for the sake of a check.
     const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
     const page = targets.find((t) => t.type === 'page');
-    const socket = new WebSocket(page.webSocketDebuggerUrl);
+    // Node 20, which the project supports, has no global WebSocket (22 has); `ws` is a devDependency for that.
+    const WS = globalThis.WebSocket ?? (await import('ws')).WebSocket;
+    const socket = new WS(page.webSocketDebuggerUrl);
     let id = 0;
     const pending = new Map();
     socket.addEventListener('message', (event) => {

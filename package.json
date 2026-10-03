@@ -32,6 +32,7 @@
     "docker:check": "docker build -t fluidmark:local . && node www/browser-check.js http://127.0.0.1:8080"
   },
   "devDependencies": {
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "ws": "^8.22.0"
   }
 }
