@@ -36,6 +36,7 @@ node bin/mark.js --in track.wav --payload "http://example.org/" --out marked.wav
 node bin/mark.js --in marked.wav --read --key "a phrase"
 node bin/attack.js --in track.wav --payload "http://example.org/" --scheme spread   # one file, every attack
 node bin/corpus.js --dir ~/Music/album --strength -20                               # a whole directory
+node bin/false-positive.js --dir ~/Music/album --keys 50                           # unmarked audio, many keys
 node bin/make-track.js --out track.wav                                              # a synthetic test track
 ```
 
