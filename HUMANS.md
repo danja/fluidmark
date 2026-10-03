@@ -6,6 +6,24 @@ does not belong here at all.
 
 Keep this short. An item here is something the work is waiting on.
 
+## Putting an update on the live server
+
+A `git pull` on the server changes nothing by itself: the container has the files copied in when the image is built. From
+the repository root on the server:
+
+```sh
+git pull
+docker build -t fluidmark:local .
+docker rm -f fluidmark
+docker run -d --name fluidmark --restart unless-stopped -p 127.0.0.1:8080:8080 fluidmark:local
+```
+
+- The site is down for a second or two between `rm -f` and `run`.
+- Host nginx needs no reload unless `strandz.it.conf` itself changed (`nginx -t && systemctl reload nginx`).
+- HTML and the Wasm are `no-cache`, so a refresh picks them up; the stylesheet is cached for an hour.
+- Afterwards, open `/fluidmark/`, hard-refresh, check the browser console for errors, and check that `/`, `/jigdaw/`,
+  `/diddums/` still answer as before (`docs/web.md`).
+
 ## 1. Checks that need a person
 
 - [ ] **Listen to the port, against the original.** Run the reference encoder and fluidmark's, play both against the same
