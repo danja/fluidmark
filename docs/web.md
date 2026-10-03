@@ -155,5 +155,20 @@ screen reader.
   a payload, no mark found, and found-but-damaged.
 - **A file input is announced badly.** Show the chosen file's name and size next to it, in
   text, because on some browsers the input announces neither.
-- **The old URLs were `webbeep.it`.** Whether the new site keeps that name or gets a new one
-  is a decision, and it affects every canonical link and the `doap.xml`.
+- **The new site is `strandz.it`**, at the root of the domain. `/jigdaw/` already lives there and is retained, so
+  the proxy sends only what is not under it to the container (`deploy/proxy.conf`). The old `webbeep.it` is
+  mentioned in the pages as history, not linked as the home.
+
+## Before and after going live on strandz.it
+
+The domain already serves other material, and FluidMark now takes the root, so the check has two halves. The second is
+the one that is easy to forget, because nothing in the container can see it.
+
+1. **FluidMark answers.** `/`, `/spec.html`, `/applications.html`, `/build/fluidmark_core.wasm` as `application/wasm`,
+   `/src/load-browser.js` as JavaScript, and an encode then a decode in a real browser, as above, against the domain
+   instead of `127.0.0.1:8080`.
+2. **What was there still answers, from what answered it.** Before the change, record the status, `content-type` and a
+   hash of the body for `/jigdaw/` and for every other path the domain serves, and compare after. `curl -sI` on the
+   directory is not enough: a proxy that now sends it to the container returns a 404 page that looks like a page.
+   Anything outside `/jigdaw/` that the domain served at its root is shadowed by the site and is gone unless it is
+   moved or given its own location.

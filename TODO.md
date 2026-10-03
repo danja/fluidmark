@@ -40,7 +40,7 @@ Recorded so they are not relitigated, and so a later reader can see what was cho
       claim with nothing behind it.
 - [ ] **The supported formats and sample rates.** The reference is mono 16-bit 22050 Hz throughout. Real music is
       stereo, is 44.1 or 48 kHz, and gets resampled in the wild, which is where a tone-based mark breaks first.
-- [ ] **The site's name and URL.** The previous version was `webbeep.it`. Keeping it or choosing a new one affects
+- [x] **The site's name and URL.** Decided: `strandz.it`, at the root, with `/jigdaw/` retained. It was going to affect
       every canonical link and the `doap.xml`, and it is cheaper to decide before there are pages than after.
 - [ ] **The Wasm boundary for a long decode**: whole file at once, or blocks in a worker. Blocks are what make a
       progress indicator and a cancel possible, and they change the buffer ownership rules from one file to one block.
@@ -189,8 +189,9 @@ itself.
 - [x] **A Dockerfile and an nginx configuration.** Multi-stage: the Wasm core is built in one stage and the running
       image contains only nginx and the files it serves. No Node, no Rust, no npm packages at runtime.
 - [x] **A deployment check** written down in `docs/web.md`, run against the container.
-- [ ] **Deploy it.** Needs a host and a domain. The old site was `webbeep.it`; whether that name is kept or a new one is
-      taken is still open in the decisions list, and it changes every canonical link.
+- [ ] **Deploy it** to `strandz.it`, at the root, beside the retained `/jigdaw/`. Needs a host to run the container and
+      the locations in `deploy/proxy.conf` added to the existing vhost. Record what `/jigdaw/` and the rest of the domain
+      answer with **before** the change, and compare after (`docs/web.md`). Decide the cache policy first.
 - [ ] **A browser check in a real browser**, which is a person: layout at 360px, focus order, the pointer, and a screen
       reader pass. All in `HUMANS.md`, none of it checkable from a DOM without a renderer.
 - [ ] **Progress and cancel that actually work.** The page has the region and the buttons; a cancel that cannot interrupt
