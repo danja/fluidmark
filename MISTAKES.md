@@ -7,6 +7,23 @@ Newest first within a theme. Some entries are lessons carried over from sibling 
 reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
 what would notice it happening.
 
+## A relative URL can still escape the prefix it is served under
+
+**What happened.** On the live page at `strandz.it/fluidmark/`, choosing a file did nothing and the input stayed on
+"No file chosen". `www/app.js` imported `../src/load-browser.js`. From `/fluidmark/app.js` that resolves to `/src/...`,
+which the front door sends to a different app. The import failed, the module never ran, and the page rendered fine
+with every handler missing. The unit tests, the markup tests and the container check all passed.
+
+**Root cause.** The prefix tests looked for a leading slash, on the reasoning that relative URLs are safe. A relative URL
+with `../` is relative to a directory that only exists in the container's own layout, and the prefix is one level
+that the container never sees. The container served `/src/` correctly at its own root, so every check against
+`127.0.0.1:8080` passed.
+
+**Prevention.** `tests/web.test.js` now resolves the whole import graph from the URL the page is really served at
+and requires every module to land under `/fluidmark/` on a file the container serves. It was broken on purpose to
+confirm it goes red. The deployment check also has to be run against the real domain, not only the container: it is the
+only place the prefix exists.
+
 ## A figure computed from nothing reads as a measurement
 
 **What happened.** `bin/attack.js` computed the bit error rate of a row as `errors / bits` and printed it
