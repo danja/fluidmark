@@ -4,7 +4,7 @@ Watermarking for music. Mark a track with an identifier, and get that identifier
 of the marked file, where the mark is inaudible and survives significant processing and
 degradation in both the time and frequency domains.
 
-The plan is in `TODO.md`, the guidance in `AGENTS.md`, and where things stand against the brief is in
+`docs/how-it-works.md` explains where the mark sits and what to listen for. The plan is in `TODO.md`, the guidance in `AGENTS.md`, and where things stand against the brief is in
 `docs/steganography.md`, which has the measured tables.
 
 What exists: a spread-spectrum watermark that reads back exactly after gain changes, dither, moderate noise,
