@@ -40,6 +40,7 @@ export function parseArgs(argv) {
 
 const USAGE = `usage:
   node bin/mark.js --in track.wav --payload "text" --out marked.wav [--key phrase] [--scheme spread|tones]
+                   [--level relative|masked] [--strength dB]
   node bin/mark.js --in marked.wav --read [--key phrase] [--scheme spread|tones]
 
 The default scheme is spread: a watermark hidden under the music, for a file of one to eight channels, written
@@ -48,6 +49,11 @@ back as a WAV with the channels kept and the input's bit depth (16 or 24 integer
 through ffmpeg, which has to be installed. It needs a track of about 12 to 60 seconds depending on the payload,
 and says how long when it is too short. --key is a phrase; the same phrase is needed to read the mark back, and
 without one the public default key is used, which anyone can use.
+
+--level relative (the default) sets --strength as dB relative to the music's own level in the carrier's band,
+-20 by default; --level masked sets it as how many dB under a modelled masking threshold the mark sits, in
+every band and frame, -6 by default. Neither has been confirmed inaudible by listening: see HUMANS.md, and
+bin/audibility.js for a model's view of where a mark is closest to being heard.
 
 --scheme tones is the original audible scheme, from the reference: mono 16-bit WAV in, tones out.
 
@@ -110,7 +116,10 @@ async function spreadMain(core, args) {
   }
 
   const payload = new TextEncoder().encode(String(args.payload));
-  const marked = spread.embed(core, wav.channelData, payload, { key, sampleRate: wav.sampleRate });
+  const level = args.level ?? 'relative';
+  if (level !== 'masked' && level !== 'relative') throw new Error(`unknown level "${level}": masked or relative`);
+  const strengthDb = args.strength === undefined ? undefined : Number(args.strength);
+  const marked = spread.embed(core, wav.channelData, payload, { key, sampleRate: wav.sampleRate, level, strengthDb });
   // A WAV keeps its own depth: marking a 24-bit master must not cut it to 16. Anything ffmpeg decoded
   // comes back as float, which says nothing about the depth it came from, so it is written 16-bit.
   const bits = args.bits ? Number(args.bits) : wav.kind === 'wav' ? outputBitsFor(wav) : 16;

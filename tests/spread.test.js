@@ -13,7 +13,7 @@ import { ATTACKS } from '../src/attacks.js';
 import { frame } from '../src/frame.js';
 import { splitKey } from '../src/watermark.js';
 import { readFileSync } from 'node:fs';
-import { DEFAULT_KEY, detect, embed, keyFromText, MAX_EMBED_FRAMES, minSamples } from '../src/spread.js';
+import { DEFAULT_KEY, DEFAULT_MASKED_MARGIN_DB, detect, embed, keyFromText, MAX_EMBED_FRAMES, minSamples } from '../src/spread.js';
 import { synthTrack } from '../src/synth.js';
 
 // Embedding and reading a half-minute of audio takes a second or two each, and the suite runs
@@ -271,5 +271,37 @@ describe('limits', () => {
       get length() { return MAX_EMBED_FRAMES + 1; }
     }
     expect(() => embed(core, new Huge(1), PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(/split the track/);
+  });
+});
+
+
+describe('masked level', () => {
+  it('marks under the masking threshold, and the mark reads', () => {
+    const out = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked' });
+    expect(out.length).toBe(host.length);
+    expect(Array.from(out)).not.toEqual(Array.from(host));
+    const found = detect(core, out, { key: KEY, sampleRate: RATE });
+    expect(found.ok).toBe(true);
+    expect(new TextDecoder().decode(found.payload)).toBe('urn:x:track-1');
+  });
+
+  it('marks stereo the same way', () => {
+    const left = host;
+    const right = synthTrack(host.length / RATE, RATE, 77);
+    const out = embed(core, [left, right], PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked', strengthDb: -9 });
+    expect(out).toHaveLength(2);
+    expect(detect(core, out, { key: KEY, sampleRate: RATE }).ok).toBe(true);
+  });
+
+  it('is a different unit from the relative level, and each has its own default', () => {
+    const a = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked' });
+    const b = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked', strengthDb: DEFAULT_MASKED_MARGIN_DB });
+    expect(Array.from(a)).toEqual(Array.from(b));
+    const relative = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE });
+    expect(Array.from(relative)).not.toEqual(Array.from(a));
+  });
+
+  it('refuses a level it does not have', () => {
+    expect(() => embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'loud' })).toThrow(TypeError);
   });
 });
