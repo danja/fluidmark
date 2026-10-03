@@ -350,6 +350,27 @@ async function main() {
       check(bits === 24, `and written back 24-bit (${bits}; ${await evaluate('document.getElementById("mark-detail").textContent')})`);
     }
 
+    // 6c. Cancel really stops a long job, and the page works afterwards. A five-minute unmarked file takes the
+    // reader long enough to be cancelled part-way, and the buttons are only ever reachable because the work is
+    // in a worker and the page is not frozen.
+    const longWav = '/tmp/fluidmark-check/long.wav';
+    writeFileSync(longWav, encodeWavChannels([synthTrack(300, 44100, 51), synthTrack(300, 44100, 52)], 44100));
+    await setFile('#marked', longWav);
+    await setValue('read-key', 'another phrase entirely');
+    await evaluate('document.getElementById("read-result").hidden = true');
+    await click('read-button');
+    if (await until('!document.getElementById("cancel-read").hidden', 'a Cancel button appears while a long read is running', 30000)) {
+      await click('cancel-read');
+      await until('/Cancelled/.test(document.getElementById("status").textContent)', 'cancelling a long read says so', 10000);
+      check(await evaluate('document.getElementById("cancel-read").hidden && !document.getElementById("read-button").disabled'), 'and the buttons are back: Cancel gone, Read usable');
+      check(await evaluate('document.getElementById("read-result").hidden'), 'and no result was shown for the cancelled job');
+    }
+    // A new job after a cancel starts a fresh worker and works.
+    await setFile('#marked', stereoWav);
+    await evaluate('document.getElementById("read-result").hidden = true');
+    await click('read-button');
+    await until('!document.getElementById("read-result").hidden', 'a read after a cancel works', 60000);
+
     // 7. The tone scheme needs no music file and says it is not using one.
     await setValue('carrier', 'tones');
     check(await evaluate('document.getElementById("source-field").hidden'), 'the tone scheme leaves out the music file chooser');

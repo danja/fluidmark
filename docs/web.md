@@ -186,6 +186,10 @@ forget because nothing in the container can see it.
 - **Refusals say why**, in the status line, which stays at the top of the viewport so an error is on screen while the
   button is: a track too short for the identifier (with the length it needs), a format that is not WAV or MP3, a track
   longer than the core will mark in one call.
-- **No cancel button.** It could not interrupt a Wasm call, so it was removed rather than left doing nothing.
+- **The work runs in a worker** (`www/worker.js`), so a long file does not freeze the page, the status line says which stage it
+  is at (reading, marking, writing, looking for the watermark, looking for the tones), and **Cancel is real**: a call into
+  Wasm cannot be interrupted from inside, so cancelling terminates the worker, and the next job starts a fresh one. The
+  Cancel button exists only while there is a job to cancel. `www/browser-check.js` cancels a five-minute read part-way
+  and then runs another job.
 - `www/browser-check.js` drives all of this in headless Chrome with real files, including a stereo MP3 through
   WebCodecs and one of the old service's MP3s. `npm run docker:check` runs it.

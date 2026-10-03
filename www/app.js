@@ -3,18 +3,13 @@
 // The page's behaviour. Vanilla JavaScript, no framework, no build step beyond the Wasm module.
 //
 // Two operations, matching the previous site: mark a file with an identifier, and read an
-// identifier back out of a marked file. Both run in this page. Nothing is uploaded, and the only
-// reason that is true is that the codec is here rather than on a server.
+// identifier back out of a marked file. Both run in this browser, in a worker (`worker.js`) so that a long
+// file does not freeze the page and Cancel can really stop it. Nothing is uploaded, and the only reason that
+// is true is that the codec is here rather than on a server.
 //
 // Every element is reached by id, and `tests/web.test.js` asserts each id is still here. An
 // element that has gone is a null dereference at the moment a user presses a button, which is the
 // worst time to find out.
-
-import { loadCore } from './src/load-browser.js';
-import { readAudioFile } from './src/audio-browser.js';
-import { mark as markTones, read as readTones, TONE_RATE } from './src/mark.js';
-import { encodeWav, encodeWavChannels, outputBitsFor } from './src/wav.js';
-import * as spread from './src/spread.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,6 +24,7 @@ const els = {
   source: $('source'),
   sourceInfo: $('source-info'),
   markButton: $('mark-button'),
+  cancelMark: $('cancel-mark'),
   markResult: $('mark-result'),
   markDownload: $('mark-download'),
   markDetail: $('mark-detail'),
@@ -36,6 +32,7 @@ const els = {
   marked: $('marked'),
   markedInfo: $('marked-info'),
   readButton: $('read-button'),
+  cancelRead: $('cancel-read'),
   readResult: $('read-result'),
   readPayload: $('read-payload'),
   readNone: $('read-none'),
@@ -43,23 +40,51 @@ const els = {
   readDetail: $('read-detail'),
 };
 
-let core = null;
-let coreFailed = false;
+/**
+ * The worker the work runs in, made on first use.
+ *
+ * Relative to this file, so it stays under whatever path the site is served at. A worker that cannot start, a
+ * missing file or a blocked module, reports through `onerror` and is said so in words, not left as two buttons
+ * that do nothing.
+ */
+let worker = null;
+let current = null; // { resolve, reject, onStatus } for the job in flight
 
-/** Load the core once, on first use, and say so if it fails. */
-async function getCore() {
-  if (core) return core;
-  if (coreFailed) throw new Error('the codec did not load, so nothing can be done here');
-  setStatus('Loading the codec…');
-  try {
-    core = await loadCore();
-    setStatus('Ready.');
-    return core;
-  } catch (error) {
-    coreFailed = true;
-    setStatus(`The codec did not load: ${error.message}. Reload the page to try again.`);
-    throw error;
-  }
+function startWorker() {
+  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = (event) => {
+    const m = event.data;
+    if (!current) return;
+    if (m.type === 'status') current.onStatus(m.text);
+    else if (m.type === 'result') { const job = current; current = null; job.resolve(m.result); }
+    else if (m.type === 'error') { const job = current; current = null; job.reject(new Error(m.message)); }
+  };
+  worker.onerror = (event) => {
+    const job = current;
+    current = null;
+    worker = null;
+    if (job) job.reject(new Error(`the page's worker failed to start or crashed: ${event.message || 'no reason given'}`));
+  };
+}
+
+/** Run a job in the worker, with `onStatus` told what stage it is at. Resolves with its result. */
+function runJob(message, onStatus) {
+  if (current) return Promise.reject(new Error('a job is already running'));
+  if (!worker) startWorker();
+  return new Promise((resolve, reject) => {
+    current = { resolve, reject, onStatus };
+    worker.postMessage(message);
+  });
+}
+
+/** Stop the job in flight. Terminating the worker is the only way to interrupt a call into Wasm, and it is one. */
+function cancelJob() {
+  if (!current) return;
+  const job = current;
+  current = null;
+  worker.terminate();
+  worker = null;
+  job.reject(new Error('cancelled'));
 }
 
 function setStatus(message) {
@@ -88,25 +113,16 @@ function updateCount() {
 els.payload.addEventListener('input', updateCount);
 updateCount();
 
-/** A short busy period, so a long operation yields to the browser between steps. */
-const breathe = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-function setBusy(button, busy, busyText) {
+function setBusy(button, cancel, busy, busyText) {
   button.setAttribute('aria-busy', busy ? 'true' : 'false');
   button.disabled = busy;
   button.textContent = busy ? busyText : button.dataset.label || button.textContent;
+  // The cancel button exists only while there is something to cancel, and what it does is real.
+  cancel.hidden = !busy;
 }
 
 els.markButton.dataset.label = 'Mark this file';
 els.readButton.dataset.label = 'Read the mark';
-
-/** Minutes and seconds, for a length a person will compare against their track. */
-function clock(seconds) {
-  const whole = Math.round(seconds);
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
-}
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** The tone scheme does not use a music file, so the chooser is left out rather than ignored. */
 function syncScheme() {
@@ -117,19 +133,9 @@ function syncScheme() {
 els.carrier.addEventListener('change', syncScheme);
 syncScheme();
 
-/** Channels averaged into one, for the tone reader, which is mono by definition. */
-function fold(channelData) {
-  if (channelData.length === 1) return channelData[0];
-  const out = new Float32Array(channelData[0].length);
-  for (const channel of channelData) {
-    for (let i = 0; i < out.length; i += 1) out[i] += channel[i] / channelData.length;
-  }
-  return out;
-}
-
 els.markButton.addEventListener('click', async () => {
   const payload = els.payload.value.trim();
-  const tones = els.carrier.value === 'tones';
+  const scheme = els.carrier.value === 'tones' ? 'tones' : 'watermark';
   const file = els.source.files && els.source.files[0];
   els.markResult.hidden = true;
 
@@ -138,68 +144,26 @@ els.markButton.addEventListener('click', async () => {
     els.payload.focus();
     return;
   }
-  if (!tones && !file) {
+  if (scheme === 'watermark' && !file) {
     setStatus('Choose a music file first.');
     els.source.focus();
     return;
   }
 
-  setBusy(els.markButton, true, 'Marking…');
+  setBusy(els.markButton, els.cancelMark, true, 'Marking…');
   try {
-    const codec = await getCore();
-    let wavBytes;
-    let name;
-    let detail;
-
-    if (tones) {
-      const samples = markTones(codec, payload);
-      wavBytes = encodeWav(samples, TONE_RATE);
-      name = 'marked-tones.wav';
-      detail = `${TONE_RATE} Hz mono, ${clock(samples.length / TONE_RATE)}. Audible tones, the original scheme. This is a new file of beeps, not your music.`;
-    } else {
-      setStatus(`Reading ${file.name}…`);
-      const audio = await readAudioFile(file);
-      await breathe();
-
-      const bytes = new TextEncoder().encode(payload);
-      const needed = spread.minSamples(codec, bytes.length, audio.sampleRate);
-      if (audio.frames < needed) {
-        throw new Error(
-          `this track is ${clock(audio.frames / audio.sampleRate)} long and a mark with an identifier this long ` +
-            `needs at least ${clock(needed / audio.sampleRate)}. A shorter identifier needs less.`,
-        );
-      }
-
-      setStatus(`Marking ${plural(audio.channels, 'channel')}…`);
-      await breathe();
-      const key = spread.keyFromText(els.key.value);
-      const marked = spread.embed(codec, audio.channelData, bytes, { key, sampleRate: audio.sampleRate });
-      await breathe();
-
-      // A WAV keeps its own depth, so marking a 24-bit master does not cut it to 16. An MP3 has no
-      // depth to keep and is written 16-bit.
-      const bits = audio.kind === 'wav' ? outputBitsFor(audio) : 16;
-      wavBytes = encodeWavChannels(marked, audio.sampleRate, { bits });
-      name = `${file.name.replace(/\.[^.]+$/, '')}-marked.wav`;
-      const copies = Math.floor(audio.frames / needed);
-      detail =
-        `${audio.sampleRate} Hz, ${plural(audio.channels, 'channel')}, ${clock(audio.frames / audio.sampleRate)}. ` +
-        `${plural(copies, 'copy')} of the mark${copies > 1 ? ', which is what lets it survive damage' : ''}. ` +
-        `${els.key.value.trim() ? 'Made with your key.' : 'Made with the public default key, so anyone can read it.'} ` +
-        `Written as a ${bits === 32 ? '32-bit float' : `${bits}-bit`} WAV${audio.kind === 'mp3' ? ' (an MP3 has no bit depth of its own)' : ''}.`;
-    }
-
+    const done = await runJob({ op: 'mark', file, payload, scheme, keyText: els.key.value }, setStatus);
     if (els.markDownload.href.startsWith('blob:')) URL.revokeObjectURL(els.markDownload.href);
-    els.markDownload.href = URL.createObjectURL(new Blob([wavBytes], { type: 'audio/wav' }));
-    els.markDownload.download = name;
-    els.markDetail.textContent = detail;
+    els.markDownload.href = URL.createObjectURL(new Blob([done.wavBytes], { type: 'audio/wav' }));
+    els.markDownload.download = done.name;
+    els.markDetail.textContent = done.detail;
     els.markResult.hidden = false;
     setStatus('Marked. The file is ready to download below.');
     els.markResult.scrollIntoView({ block: 'nearest' });
   } catch (error) {
-    setStatus(`Could not mark that file: ${error.message}`);
+    setStatus(error.message === 'cancelled' ? 'Cancelled. Nothing was written.' : `Could not mark that file: ${error.message}`);
   } finally {
-    setBusy(els.markButton, false);
+    setBusy(els.markButton, els.cancelMark, false);
   }
 });
 
@@ -226,78 +190,25 @@ els.readButton.addEventListener('click', async () => {
     return;
   }
 
-  setBusy(els.readButton, true, 'Reading…');
+  setBusy(els.readButton, els.cancelRead, true, 'Reading…');
   try {
-    const codec = await getCore();
-    setStatus(`Reading ${file.name}…`);
-    const audio = await readAudioFile(file);
-    await breathe();
-    const shape = `${audio.sampleRate} Hz, ${plural(audio.channels, 'channel')}, ${clock(audio.frames / audio.sampleRate)}`;
-
-    // Three outcomes, three elements. Collapsing them into one box is how "no mark" turns into
-    // "an empty identifier" and users conclude the tool is broken. The watermark is looked for
-    // first, then the tones, and a damaged find from either is kept in case the other finds nothing.
-    let damaged = false;
-
-    const key = spread.keyFromText(els.readKey.value);
-    const w = spread.detect(codec, audio.channelData, { key, sampleRate: audio.sampleRate });
-    await breathe();
-    if (w.ok) {
-      const text = new TextDecoder().decode(w.payload);
-      // A file played slower or faster than it was marked is read by correcting for it, and a
-      // person who is told it was is better placed than one who thinks it was untouched.
-      const drift = (w.speed - 1) * 100;
-      const speedNote = Math.abs(drift) >= 0.0001
-        ? ` The file runs ${Math.abs(drift).toPrecision(2)}% ${drift > 0 ? 'slower' : 'faster'} than it was marked, and was corrected for.`
-        : '';
-      showResult({ text, detail: `Found by the watermark reader. ${shape}. The checksum matched.${speedNote}` });
-      setStatus(`Found an identifier: ${text}`);
-      return;
-    }
-    damaged = w.reason === 'damaged';
-
-    // The tone reader works at one rate only, so a file at another rate is not read by it, and
-    // the page says so instead of reporting a mark that is merely out of range.
-    let tonesSkipped = false;
-    if (audio.sampleRate === TONE_RATE) {
-      const t = readTones(codec, fold(audio.channelData));
-      if (t.ok) {
-        showResult({ text: t.text, detail: `Found by the tone reader. ${shape}. The checksum matched.` });
-        setStatus(`Found an identifier: ${t.text}`);
-        return;
-      }
-      damaged = damaged || (t.reason !== 'no-mark');
-    } else {
-      tonesSkipped = true;
-    }
-
-    if (damaged) {
-      showResult({
-        damaged:
-          'Something was found but it does not check out, so it is not reported as an identifier. ' +
-          'The file may have been processed or truncated.',
-        detail: shape,
-      });
+    const found = await runJob({ op: 'read', file, keyText: els.readKey.value }, setStatus);
+    if (found.outcome === 'found') {
+      showResult({ text: found.text, detail: found.detail });
+      setStatus(`Found an identifier: ${found.text}`);
+    } else if (found.outcome === 'damaged') {
+      showResult({ damaged: found.damaged, detail: found.detail });
       setStatus('Found something damaged, not an identifier.');
     } else {
-      showResult({
-        none:
-          'No mark found in this file. That is a definite answer, not a failure. If the mark was made with a key, ' +
-          'this is also what a wrong or missing key looks like.',
-        detail: `${shape}.${tonesSkipped ? ` The tone reader only reads ${TONE_RATE} Hz files, so it was not tried.` : ''}`,
-      });
+      showResult({ none: found.none, detail: found.detail });
       setStatus('No mark found in this file.');
     }
   } catch (error) {
-    setStatus(`Could not read that file: ${error.message}`);
+    setStatus(error.message === 'cancelled' ? 'Cancelled.' : `Could not read that file: ${error.message}`);
   } finally {
-    setBusy(els.readButton, false);
+    setBusy(els.readButton, els.cancelRead, false);
   }
 });
 
-// Report a load failure rather than leaving two buttons that do nothing with no explanation.
-window.addEventListener('error', (event) => {
-  if (!core && !coreFailed) {
-    setStatus(`Something went wrong loading the page: ${event.message}`);
-  }
-});
+els.cancelMark.addEventListener('click', cancelJob);
+els.cancelRead.addEventListener('click', cancelJob);

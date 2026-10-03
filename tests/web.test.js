@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 const www = (name) => fileURLToPath(new URL(`../www/${name}`, import.meta.url));
 const html = readFileSync(www('index.html'), 'utf8');
 const app = readFileSync(www('app.js'), 'utf8');
+const worker = readFileSync(www('worker.js'), 'utf8');
 
 /** Ids `app.js` reaches for. A change to either side without the other fails here. */
 const IDS = [
@@ -31,6 +32,7 @@ const IDS = [
   'source',
   'source-info',
   'mark-button',
+  'cancel-mark',
   'mark-result',
   'mark-download',
   'mark-detail',
@@ -38,6 +40,7 @@ const IDS = [
   'marked',
   'marked-info',
   'read-button',
+  'cancel-read',
   'read-result',
   'read-payload',
   'read-none',
@@ -271,8 +274,8 @@ describe('the site is served under a path prefix', () => {
 
   it('has no absolute paths in the page script', () => {
     const absolute = [
-      ...[...app.matchAll(/from '\//g)].map(() => "import from '/...'"),
-      ...[...app.matchAll(/import '\//g)].map(() => "import('/...')"),
+      ...[...app.matchAll(/from '\//g), ...worker.matchAll(/from '\//g)].map(() => "import from '/...'"),
+      ...[...app.matchAll(/import '\//g), ...worker.matchAll(/import '\//g)].map(() => "import('/...')"),
     ];
     expect(absolute, `app.js loads from the host root: ${absolute}`).toEqual([]);
   });
@@ -280,7 +283,8 @@ describe('the site is served under a path prefix', () => {
   it('loads its modules and its stylesheet relatively', () => {
     expect(html).toMatch(/href="style\.css"/);
     expect(html).toMatch(/src="app\.js"/);
-    expect(app).toMatch(/from '\.\/src\/load-browser\.js'/);
+    expect(worker).toMatch(/from '\.\/src\/load-browser\.js'/);
+    expect(app).toMatch(/new URL\('\.\/worker\.js', import\.meta\.url\)/);
   });
 
   it('states the canonical address, prefix included', () => {
@@ -339,6 +343,8 @@ describe('everything the page loads resolves inside the prefix', () => {
 
   it('keeps every import and module URL under the prefix, on a file that exists', () => {
     const seen = new Set();
+    // The page script and the worker it starts, which is reached by `new URL('./worker.js', import.meta.url)` and
+    // is where nearly every module is imported from.
     const queue = [`${ORIGIN}${PREFIX}/app.js`];
     const problems = [];
     while (queue.length > 0) {

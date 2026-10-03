@@ -127,7 +127,7 @@ measured baseline.
       `docs/steganography.md`. Longer tracks do better, and nothing here has been measured on one.
 - [ ] **Reading an unmarked file takes about 5 s for a five-minute track** on an idle machine in Node (2 s for a minute and
       a half), mostly the speed search, which a file with no mark pays in full, and more in the page. Cheaper candidates in the coarse scan, or a quick read first and the speed search as
-      a second step the page offers, would help. The page blocks while it works, which a worker would fix.
+      a second step the page offers, would help. 
 - [ ] **The speed search still loses 1% and 4% changes on a few tracks.** Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
       the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
@@ -242,9 +242,8 @@ itself.
       policy first.
 - [ ] **A browser check in a real browser**, which is a person: layout at 360px, focus order, the pointer, and a screen
       reader pass. All in `HUMANS.md`, none of it checkable from a DOM without a renderer.
-- [ ] **Progress and cancel.** The cancel buttons were removed: a cancel that cannot interrupt a Wasm call is not one,
-      and a control that does nothing is worse than none. Bring them back when the work runs in a worker, which is
-      also what would let a long file show progress and keep the page responsive.
+- [x] **Progress and cancel**: the page's work runs in a worker (`www/worker.js`) with stage-by-stage status, and Cancel
+      terminates the worker. Finer progress inside a single stage (a percentage while marking) would need the core to report it.
 
 ## Reading
 
