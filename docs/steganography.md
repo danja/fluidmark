@@ -343,6 +343,78 @@ The header read from one copy and the header read from the combination of copies
 length, and the second was used to slice a buffer sized by the first. The two have to agree now, a fuzz test
 mixes frames of different lengths and noise of every size through that step, and it fails on the old code.
 
+### How audible, by a model, and the shaped mark that replaced the fixed level
+
+`bin/audibility.js` measures how far a mark sits under what the music masks, per critical band and per frame:
+the noise-to-mask ratio (NMR), from a simplified masking model in `wasm/src/psycho.rs` (Bark bands, Schroeder's
+spreading function, an offset by how tonal the band is, a floor at the threshold in quiet, full scale taken as 96 dB
+SPL). **It is a model, not a listener.** It was fitted to listening tests of other noise on other music, ignores
+masking in time, and assumes a playback level. It is better than SNR because it knows a loud tone hides noise near
+it and a quiet passage hides almost nothing. It exists to compare settings and to say where a mark is closest to
+being heard, so that a listening session can be aimed at the worst passage. Only a listener decides whether a mark
+is inaudible.
+
+The fixed level the mark had (a set number of dB under the music's own level in the band, the same everywhere) turns
+out to be the wrong shape. Same two hosts, key 2, 60 s of the quiet recording and 47 s of the loud loops:
+
+| Relative level | `round60s` mean / 95th pct / cells over threshold | `loops` mean / 95th pct / cells over threshold |
+|---|---|---|
+| -20 dB | -19.2 / +0.1 dB / 5.1% | -16.3 / +9.8 dB / 18.5% |
+| -26 dB | -25.2 / -5.9 dB / 1.3% | -22.3 / +3.8 dB / 8.9% |
+| -32 dB | -31.2 / -11.9 dB / 0.2% | -28.3 / -2.2 dB / 3.6% |
+| -38 dB | -37.2 / -17.9 dB / 0.0% | -34.3 / -8.2 dB / 1.0% |
+
+On average the mark is far under the threshold, and in the passages where the music is sparse it is over it. A
+mark that is quiet enough there is quieter than it needs to be everywhere else. So the embedder has a second
+mode, `Level::Masked` (the default now): each frame's thresholds are measured from the audio as it is, before any
+mark is added; the carrier is windowed and taken to the frequency domain; each critical band is scaled so the
+mark's energy there is the threshold plus a margin, interpolated smoothly in dB between band centres; and the
+frames are overlap-added back. A frame's threshold is the lowest of its own and its neighbours', so a mark that is
+under the threshold in the quiet before a loud note is under it at the note. Digital silence stays silent. The
+margin is `strengthDb`, -6 by default, and by construction the modelled ratio lands at about the margin (a test
+holds that), which says the shaping works and says nothing about what is audible.
+
+| Margin under the threshold | `round60s` mean / 95th pct / over threshold | `loops` mean / 95th pct / over threshold |
+|---|---|---|
+| -3 dB | -4.1 / -2.0 dB / 0.0% | -7.0 / -1.8 dB / 0.1% |
+| -6 dB | -7.1 / -5.0 dB / 0.0% | -10.0 / -4.8 dB / 0.0% |
+| -9 dB | -10.1 / -8.0 dB / 0.0% | -13.0 / -7.8 dB / 0.1% |
+| -12 dB | -13.1 / -11.0 dB / 0.0% | -16.0 / -10.8 dB / 0.0% |
+
+At -6 dB the model puts the mark under the threshold in every judged cell on both hosts, and on average it carries
+about 12 dB more power than the fixed level that was over the threshold in 5 to 18% of them. It also reads better.
+
+### The whole album, with the shaped mark
+
+18 full-length stereo tracks, 44.1 kHz, 16-bit, 1.5 to 5.5 minutes, the author's own album (measured in place; only
+counts are recorded here, and nothing is in the repository). 22-byte payload, key 2, mark 6 dB under the modelled
+threshold, every attack in the list through `bin/corpus.js`. Read means the payload came back exactly, over 18 tracks:
+
+| Attack | Read |
+|---|---|
+| none, gain (-6, -0.5, +3 dB), dither (48, 36 dB), white and pink noise at 30 and 20 dB SNR | 18 of 18 |
+| low-pass 5 / 4 / 2 / 1 kHz, high-pass 200 Hz and 2 kHz, gain -30 dB | 18 of 18 |
+| resample to 48 kHz, time shift, crop first 5%, fold to mono, one channel only | 18 of 18 |
+| mp3 128k, 64k, 48k | 18 of 18 |
+| slowed 0.003%, 0.01%, 0.1% | 18 of 18 |
+| resample to 22.05 kHz | 17 of 18 |
+| slowed 1% | 16 of 18 |
+| mp3 32k | 16 of 18 |
+| sped up 4% | 14 of 18 |
+| unmarked tracks reported as marked | 0 of 18 |
+
+At the earlier fixed level of -20 dB (16 of the 18 tracks measured) the same mild rows read 16 of 16 and speed and
+32k MP3 lost more: 2 of 16 at 1% speed, 4 of 16 at 4%, 2 of 16 at 32k. Every row that fails is a combination of a strong attack and a track that is hard (sparse, quiet, or short
+on copies), and the speed rows are the weakest because estimating the speed needs a cleaner peak than a straight read.
+
+**False positives.** `bin/false-positive.js` reads unmarked audio under many different keys, since the reader is
+looking for a keyed pattern and each key is another pattern to find in the same music. 720 reads: the 18 album
+tracks (1.0 hours of audio, the first three minutes of each), 40 keys each, spread over the 64-bit range. None was
+reported as marked and none as a damaged mark. By the rule of three that puts both rates under 0.42% per read at
+95% confidence, and the frame's magic number, version and CRC-16 give about 2^-48 per sync candidate by
+construction, so this measures that nothing is wrong with the construction and not the rate itself. 720 is a small
+sample; the tool takes any number of keys.
+
 ### Stereo
 
 Real music is stereo, so the core takes planar channels (`core_ss_embed` and `core_ss_detect` have a

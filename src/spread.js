@@ -89,12 +89,12 @@ export function minSamples(core, payloadBytes, sampleRate) {
 /**
  * Put a payload into audio. The input is not modified.
  *
- * `level` is `'relative'` (the default), where `strengthDb` is the mark's level relative to the music's in
- * the carrier's band, or `'masked'`, where it is how far under the masking threshold of a simplified
- * psychoacoustic model the mark sits, in every band and every frame. Returns the same shape it was
+ * `level` is `'masked'` (the default), where `strengthDb` is how far under the masking threshold of a
+ * simplified psychoacoustic model the mark sits, in every band and every frame, or `'relative'`, where it
+ * is the mark's level relative to the music's in the carrier's band. Returns the same shape it was
  * given: a `Float32Array` for a `Float32Array`, an array of them for an array. Throws `RangeError` for audio too short to hold one copy, naming how much it needs.
  */
-export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, flags = 0, strengthDb, level = 'relative' } = {}) {
+export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, flags = 0, strengthDb, level = 'masked' } = {}) {
   if (level !== 'relative' && level !== 'masked') {
     throw new TypeError(`level is 'relative' or 'masked', got ${level}`);
   }

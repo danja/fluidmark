@@ -49,8 +49,9 @@
       <p>
         The watermark hides the identifier in the music as a faint noise-like signal, spread
         across the spectrum between 250 Hz and 8 kHz. Each bit of the message is a burst of
-        keyed noise, 2048 samples long, added to the track at a level that follows the music's own
-        level in that band, so it is quieter when the music is.
+        keyed noise, 2048 samples long. It is shaped, frame by frame and critical band by critical
+        band, to sit 6 dB under the threshold that a simplified model of hearing says the music
+        masks, so it is loud where the music is loud and nearly silent where it is not.
       </p>
       <p>
         The noise is generated from a key. Without the key there is nothing to correlate against,
@@ -69,14 +70,16 @@
         to mono, or either channel on its own, still read.
       </p>
       <p>
-        <strong>What has been measured.</strong> On a minute of a real stereo recording, with the
-        mark 20 dB below the music in its band, the message read back exactly after gain changes,
-        dither, moderate white noise, low-pass and high-pass filtering, resampling to 48 kHz and to
-        22.05 kHz, a time shift, a crop, a fold to mono, one channel alone, and MP3 compression at
-        128 and 64 kbit/s. It was lost to heavy noise, pink noise at 20 dB below the loudest
-        sample. On other music the results differ a little, and the table is in the project
-        documentation. A track too short to hold one copy is refused: about 12 seconds for a few
-        characters of identifier, 26 for 22 characters and about a minute for 63.
+        <strong>What has been measured.</strong> On eighteen full-length stereo tracks, with the
+        mark 6 dB under the modelled masking threshold, the message read back exactly after gain
+        changes, dither, white and pink noise at 20 dB below the loudest sample, low-pass and
+        high-pass filtering, resampling to 48 kHz, a time shift, a crop, a fold to mono, one channel
+        alone, MP3 compression down to 48 kbit/s, and a clock error or tempo change of up to a tenth
+        of a percent, on every track. A change of 1% or 4% in speed, resampling to 22.05 kHz and MP3
+        at 32 kbit/s were lost on a few tracks each. Unmarked tracks were never reported as marked.
+        The tables are in the project documentation. A track too short to hold one copy is refused:
+        about 12 seconds for a few characters of identifier, 26 for 22 characters and about a
+        minute for 63.
       </p>
       <p>
         <strong>What has not.</strong> Nobody has yet confirmed by listening that the mark is

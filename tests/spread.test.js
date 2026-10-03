@@ -297,8 +297,10 @@ describe('masked level', () => {
     const a = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked' });
     const b = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'masked', strengthDb: DEFAULT_MASKED_MARGIN_DB });
     expect(Array.from(a)).toEqual(Array.from(b));
-    const relative = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE });
+    const relative = embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE, level: 'relative' });
     expect(Array.from(relative)).not.toEqual(Array.from(a));
+    // And masked is what no level at all means.
+    expect(Array.from(embed(core, host, PAYLOAD, { key: KEY, sampleRate: RATE }))).toEqual(Array.from(a));
   });
 
   it('refuses a level it does not have', () => {

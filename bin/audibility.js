@@ -76,7 +76,7 @@ async function main(argv) {
       const payload = new TextEncoder().encode(String(args.payload ?? 'http://danbri.org/foaf'));
       const needed = core.ssMinSamples(10 + payload.length, original.sampleRate);
       if (original.frames < needed) throw new Error(`the track is ${seconds.toFixed(0)} s and one copy of the mark needs ${(needed / original.sampleRate).toFixed(0)} s`);
-      const level = args.level ?? 'relative';
+      const level = args.level ?? 'masked';
       const defaults = level === 'masked' ? '-3,-6,-9,-12' : '-20,-26,-32,-38';
       for (const strength of String(args.strengths ?? defaults).split(',').map(Number)) {
         const marked = spread.embed(core, original.channelData, payload, { key, sampleRate: original.sampleRate, strengthDb: strength, level });

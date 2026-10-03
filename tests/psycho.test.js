@@ -38,8 +38,8 @@ describe('nmr', () => {
   });
 
   it('puts a quieter mark further under the threshold, by about the difference', () => {
-    const loud = core.nmr(host, embed(core, host, payload, { key: 1n, sampleRate: RATE, strengthDb: -20 }), RATE);
-    const quiet = core.nmr(host, embed(core, host, payload, { key: 1n, sampleRate: RATE, strengthDb: -32 }), RATE);
+    const loud = core.nmr(host, embed(core, host, payload, { key: 1n, sampleRate: RATE, strengthDb: -20, level: 'relative' }), RATE);
+    const quiet = core.nmr(host, embed(core, host, payload, { key: 1n, sampleRate: RATE, strengthDb: -32, level: 'relative' }), RATE);
     // 12 dB quieter in the mark is 12 dB in the ratio, give or take the bands that sit on the floor.
     expect(loud.meanDb - quiet.meanDb).toBeGreaterThan(9);
     expect(loud.meanDb - quiet.meanDb).toBeLessThan(13);

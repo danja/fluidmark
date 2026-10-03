@@ -96,7 +96,7 @@ export async function main(argv) {
     process.stderr.write(`unknown scheme "${scheme}": lsb or spread\n`);
     return 2;
   }
-  const level = args.level ?? 'relative';
+  const level = args.level ?? 'masked';
   if (level !== 'relative' && level !== 'masked') {
     process.stderr.write(`unknown level "${level}": relative or masked\n`);
     return 2;

@@ -71,8 +71,8 @@ export async function main(argv) {
   const options = {
     payload: args.payload ?? 'http://danbri.org/foaf',
     key: String(args.key ?? 2),
-    strength: String(args.strength ?? (args.level === 'masked' ? -6 : -20)),
-    level: String(args.level ?? 'relative'),
+    strength: String(args.strength ?? (args.level === 'relative' ? -20 : -6)),
+    level: String(args.level ?? 'masked'),
   };
   const jobs = Math.max(1, Number(args.jobs ?? 4));
 

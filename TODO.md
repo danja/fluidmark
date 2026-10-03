@@ -125,8 +125,10 @@ measured baseline.
       (the header is 10 bytes and the sync word 32 bits) are what is left, plus weighting bands by how clean the
       host is there. Each is measured through the harness on real audio, at a fixed strength, against the table in
       `docs/steganography.md`. Longer tracks do better, and nothing here has been measured on one.
-- [ ] **The speed search needs a cleaner mark than a straight read** (it loses speed changes at -32 dB where plain
-      reading still works). Fold more blocks per span when the peak is weak.
+- [ ] **Reading an unmarked file takes about 10 s for five minutes of audio**, mostly the speed search, which a file
+      with no mark pays in full. Cheaper candidates in the coarse scan, or a quick read first and the speed search as
+      a second step the page offers, would help. The page blocks while it works, which a worker would fix.
+- [ ] **The speed search still loses 1% and 4% changes on a few tracks.** Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating
       the mark's timing; a pitch shift moves the band instead and needs the same estimate on the frequency axis.
 - [ ] **Non-repeating carriers**, so that a mark cannot be estimated from the audio and subtracted. The carrier is one
@@ -187,7 +189,9 @@ Per delivery, so that each is held to its own standard.
 - [ ] **Level sensitivity.** Accuracy from full scale down to -40 dBFS. A watermark that only survives loud material is
       not a watermark.
 - [ ] **Stereo, and other sample rates.** The reference is mono 22050 Hz throughout. Both are untested by the reference.
-- [ ] **A false-positive rate**, over real music with no mark in it. The figure that says how often an unmarked track
+- [x] **A false-positive rate**, over real music with no mark in it: 0 of 720 reads, under 0.42% at 95% confidence
+      (`bin/false-positive.js`). A larger sample is a longer run of the same tool.
+- [ ] **A false-positive rate (more)**, over real music with no mark in it. The figure that says how often an unmarked track
       appears marked, and the one that decides whether the system is usable at all.
 - [ ] **A BER table for the steganographic layer**: payload bit error rate after each attack, with the audibility
       measurement beside it rather than in place of it.

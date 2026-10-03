@@ -34,13 +34,15 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
       correctly can still sound plainly wrong.
 - [ ] **Try the page on a phone, with a long stereo file.** The marker needs about 1.2 GB for six minutes of stereo and
       nothing has run it on a phone. See what happens at three minutes and at ten.
-- [ ] **Listen to the spread-spectrum mark at -20 dB, and say where it becomes audible.** The embedder exists
-      and reads at -20 dB and not at -26. Whether -20 dB is acceptable is a listening question with no proxy.
-      `node bin/attack.js --in track.wav --payload "x" --scheme spread --strength -20 --out marked.wav` writes the
-      marked file (the track has to be long enough, and the tool says how long); play it against the original,
-      then repeat at -26, -32 and -38. Note which passage you hear it in: the level follows the host's, so a
-      quiet passage is the likely place. The answer decides whether the scheme needs more processing gain
-      before it counts as a result. No tool can do this.
+- [ ] **Listen to the mark, and say at what margin you hear it.** The default now shapes the mark to sit 6 dB under a
+      modelled masking threshold. A model is not a listener, and this is the one measurement with no proxy. Pick a track
+      with a quiet passage as well as a loud one, then:
+      `node bin/audibility.js --in track.wav --strengths -3,-6,-9,-12` prints, for each margin, where the model thinks the
+      mark is closest to being heard (the "worst frame" time). `node bin/mark.js --in track.wav --payload x --out
+      marked.wav --key k --strength -6` writes a marked file (the track has to be long enough, and it says how long).
+      Play it against the original at that time and at the quietest passage, then try `--strength 0` and `-3` to hear
+      what a louder one sounds like and `-12` for a quieter one. Say the loudest margin at which you cannot tell. Also
+      try `--level relative --strength -20` once, which is what the project used before, for comparison.
 - [ ] **Listen for the mark once there is an inaudible embedding.** Whether the mark is audible is the question the whole
       project turns on, and it is the one measurement with no proxy. Play at a level a listener would actually use, on
       material with a quiet passage as well as a loud one, since a masking threshold that holds on one may not on the other.
