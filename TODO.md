@@ -119,11 +119,12 @@ measured baseline.
       remaining thing it cannot find is the sample rate, which is told.
 - [x] **Forward error correction and interleaving**, at the level of Hamming(7,4) and a keyed permutation,
       with repeats soft-combined. A stronger code is its own item below.
-- [ ] **Widen the margin further.** The floor is about -36 dB on both hosts, after a convolutional code and
-      combining partial copies. On the dynamic `loops` host what limits it is the sync and boundary stages, not the
-      code, so a longer sync word, or finding the copy period from the sync peaks across copies, is next. After that:
-      more chips per bit, and weighting bands by how clean the host is there. Each is measured through the harness
-      on real audio, at a fixed strength, against the table in `docs/steganography.md`.
+- [ ] **Widen the margin further.** The floor is about -36 dB on the 46 s dynamic host and -40 dB on the 60 s quiet
+      one, after the convolutional code, partial-copy combining and pooled sync. On `loops` what limits it now is
+      decoding the body from under two copies, so more chips per bit, a stronger code, or less overhead per copy
+      (the header is 10 bytes and the sync word 32 bits) are what is left, plus weighting bands by how clean the
+      host is there. Each is measured through the harness on real audio, at a fixed strength, against the table in
+      `docs/steganography.md`. Longer tracks do better, and nothing here has been measured on one.
 - [ ] **The speed search needs a cleaner mark than a straight read** (it loses speed changes at -32 dB where plain
       reading still works). Fold more blocks per span when the peak is weak.
 - [ ] **Pitch shift without a tempo change, and speed changes beyond 8%.** The reader corrects for tempo by estimating

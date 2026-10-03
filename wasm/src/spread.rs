@@ -83,6 +83,14 @@ const LAG_SIGMAS: f64 = 6.0;
 /// own marks, on a host where the default key was fine.
 const SYNC_SIGMAS: f64 = 2.5;
 
+/// Frame lengths, in payload bytes, the pooled sync search tries, up to the point where one copy no
+/// longer fits in what was read. A payload of 63 characters is at most 189 bytes of UTF-8.
+const POOLED_MAX_LENGTH: usize = 1023;
+
+/// How far a pooled sync score has to stand out. Lower than for one copy's, because the score is a
+/// sum over copies and the frame's own checks decide anyway.
+const POOLED_SIGMAS: f64 = 3.0;
+
 /// Sync candidates the reader will try, strongest first. Each costs a Hamming decode of one
 /// header, which is nothing, and each is gated by the frame's checks before it is believed.
 const MAX_CANDIDATES: usize = 16;
@@ -649,14 +657,8 @@ fn estimate_speeds(at_rate: &[f32], key: u64) -> Vec<f64> {
 /// Try to read a frame from soft bit values, taking `start` to be where a copy begins.
 ///
 /// Reads the header from that one copy, takes the frame's length from it, and so knows the period of
-/// the repeats and can combine every whole copy before reading again. `None` is for anything short of
-/// a header and a body that the frame's own magic and version accept.
-///
-/// The length is read twice, once from a single copy and once from the combination, and the second
-/// has to agree with the first: the period the copies were combined at came from the first, so a
-/// second that differs means the header was too damaged to say how long the frame is. That case once
-/// indexed past the end of the combined values and aborted the reader, which in Wasm is a trap and not
-/// an error.
+/// the repeats and can combine every copy before reading again. `None` is for anything short of a
+/// header and a body that the frame's own magic and version accept.
 fn complete_candidate(soft: &[f32], start: usize, polarity: f32, key: u64) -> Option<(Status, Vec<u8>, usize)> {
     let header_bits = ecc::coded_bits(HEADER_BYTES);
     if start + SYNC_BITS + header_bits > soft.len() {
@@ -667,13 +669,27 @@ fn complete_candidate(soft: &[f32], start: usize, polarity: f32, key: u64) -> Op
     if !header_is_plausible(&header) {
         return None;
     }
+    combine_and_read(soft, start, length, polarity, key)
+}
 
-    // The length is known, so the period of the repeats is, and every copy can be combined. That
-    // includes the partial ones at either end of what was read: a copy cut off by the end of the file
-    // or by a crop at the start still carries values for the part that is there, and a position the
-    // copy does not reach simply gets nothing from it. Counting only whole copies threw away most of a
-    // track that was only a little longer than one, which is exactly where the extra were needed.
+/// Combine every copy of a frame of `length` payload bytes, taking `start` to be where one begins,
+/// and read the frame out of the sum.
+///
+/// The period of the repeats follows from the length, and every copy is added in, including the
+/// partial ones at either end of what was read: a copy cut off by the end of the file or by a crop
+/// still carries values for the part that is there, and a position a copy does not reach simply gets
+/// nothing from it. Counting only whole copies threw away most of a track that was only a little longer
+/// than one, which is exactly where the extra were needed.
+///
+/// The length is read again from the combination and has to agree with the one the period came from.
+/// A header too damaged to say how long the frame is once indexed past the end of the combined values
+/// and aborted the reader, which in Wasm is a trap and not an error.
+fn combine_and_read(soft: &[f32], start: usize, length: usize, polarity: f32, key: u64) -> Option<(Status, Vec<u8>, usize)> {
+    let header_bits = ecc::coded_bits(HEADER_BYTES);
     let period = copy_bits(HEADER_BYTES + length);
+    if period > soft.len() + period / 2 {
+        return None;
+    }
     let mut combined = vec![0.0f32; period];
     let mut whole = 0usize;
     let mut seen = 0usize;
@@ -693,10 +709,10 @@ fn complete_candidate(soft: &[f32], start: usize, polarity: f32, key: u64) -> Op
         }
         at += period as isize;
     }
-    // The copy at `start` is always at least partly there, since its header was just read from it.
     // A count of whole copies of zero is real and common for a short file; what is reported is how
     // many copies' worth of values were combined, never less than one.
     let copies = whole.max(seen / period).max(1);
+
     // Position `i` of `combined` is position `i` of the copy: `start` modulo the period is where a
     // copy begins in the soft values, and every addition above was aligned to it.
     let (header, combined_length) = read_copy(&combined, key);
@@ -715,6 +731,86 @@ fn complete_candidate(soft: &[f32], start: usize, polarity: f32, key: u64) -> Op
         Err(_) => Status::Damaged,
     };
     Some((status, frame_bytes, copies))
+}
+
+/// Everything after the soft values: find where copies begin, combine them, read the frame.
+///
+/// Sync candidates come from two places. The sync word's own score at each position, which finds
+/// a copy from that copy alone. And, first, the sync scores *pooled across copies*: for every frame
+/// length whose copy fits and every offset, the scores at one period apart are summed. A mark that is
+/// faint enough for one copy's sync word to be no louder than the false peaks around it is not faint
+/// to the sum of three, and the sum also names the length, so the header need not be read to learn it.
+/// At weak marks this was what limited the reader, not the code or the boundary.
+fn read_soft(soft: &[f32], key: u64, pooled: bool) -> Detection {
+    let sync = sync_word(key);
+    let positions = soft.len() - SYNC_BITS + 1;
+    let scores: Vec<f64> = (0..positions)
+        .map(|j| sync.iter().zip(&soft[j..j + SYNC_BITS]).map(|(&s, &z)| (s * z) as f64).sum())
+        .collect();
+    let mut magnitudes: Vec<f64> = scores.iter().map(|s| s.abs()).collect();
+    let sigma = 1.4826 * median(&mut magnitudes);
+    if !(sigma > 0.0) {
+        return Detection::none();
+    }
+
+    // Pooled hypotheses: (z, length, offset, polarity), best first.
+    let mut pooled_hypotheses: Vec<(f64, usize, usize, f32)> = Vec::new();
+    if pooled {
+        for length in 0..=POOLED_MAX_LENGTH {
+            let period = copy_bits(HEADER_BYTES + length);
+            if period > soft.len() {
+                break;
+            }
+            for offset in 0..period.min(positions) {
+                let (mut sum, mut terms) = (0.0f64, 0usize);
+                let mut at = offset;
+                while at < positions {
+                    sum += scores[at];
+                    terms += 1;
+                    at += period;
+                }
+                // Under no mark the sum of `terms` scores is about `sigma * sqrt(terms)`, so this is
+                // comparable across lengths that have different numbers of copies.
+                let z = sum.abs() / (sigma * (terms as f64).sqrt());
+                if terms >= 2 && z >= POOLED_SIGMAS {
+                    pooled_hypotheses.push((z, length, offset, sum.signum() as f32));
+                }
+            }
+        }
+        pooled_hypotheses.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        pooled_hypotheses.truncate(MAX_CANDIDATES);
+    }
+    for &(z, length, offset, polarity) in &pooled_hypotheses {
+        if let Some((status, frame_bytes, copies)) = combine_and_read(soft, offset, length, polarity, key) {
+            return Detection { status, frame: frame_bytes, sync_sigmas: z, copies, speed: 1.0 };
+        }
+    }
+
+    let mut order: Vec<usize> = (0..positions).collect();
+    order.sort_by(|&p, &q| scores[q].abs().partial_cmp(&scores[p].abs()).unwrap_or(std::cmp::Ordering::Equal));
+    let mut candidates: Vec<usize> = Vec::new();
+    for &p in &order {
+        if scores[p].abs() / sigma < SYNC_SIGMAS || candidates.len() >= MAX_CANDIDATES {
+            break;
+        }
+        if candidates.iter().all(|&c| c.abs_diff(p) >= SYNC_BITS) {
+            candidates.push(p);
+        }
+    }
+
+    for &start in &candidates {
+        let polarity = scores[start].signum() as f32;
+        if let Some((status, frame_bytes, copies)) = complete_candidate(soft, start, polarity, key) {
+            return Detection {
+                status,
+                frame: frame_bytes,
+                sync_sigmas: scores[start].abs() / sigma,
+                copies,
+                speed: 1.0,
+            };
+        }
+    }
+    Detection::none()
 }
 
 /// Look for a mark in `samples`, recorded at `sample_rate`.
@@ -803,42 +899,7 @@ fn detect_at_rate(at_rate: &[f32], key: u64) -> Detection {
         return Detection::none();
     }
 
-    let sync = sync_word(key);
-    let positions = soft.len() - SYNC_BITS + 1;
-    let scores: Vec<f64> = (0..positions)
-        .map(|j| sync.iter().zip(&soft[j..j + SYNC_BITS]).map(|(&s, &z)| (s * z) as f64).sum())
-        .collect();
-    let mut magnitudes: Vec<f64> = scores.iter().map(|s| s.abs()).collect();
-    let sigma = 1.4826 * median(&mut magnitudes);
-    if !(sigma > 0.0) {
-        return Detection::none();
-    }
-
-    let mut order: Vec<usize> = (0..positions).collect();
-    order.sort_by(|&p, &q| scores[q].abs().partial_cmp(&scores[p].abs()).unwrap_or(std::cmp::Ordering::Equal));
-    let mut candidates: Vec<usize> = Vec::new();
-    for &p in &order {
-        if scores[p].abs() / sigma < SYNC_SIGMAS || candidates.len() >= MAX_CANDIDATES {
-            break;
-        }
-        if candidates.iter().all(|&c| c.abs_diff(p) >= SYNC_BITS) {
-            candidates.push(p);
-        }
-    }
-
-    for &start in &candidates {
-        let polarity = scores[start].signum() as f32;
-        if let Some((status, frame_bytes, copies)) = complete_candidate(&soft, start, polarity, key) {
-            return Detection {
-                status,
-                frame: frame_bytes,
-                sync_sigmas: scores[start].abs() / sigma,
-                copies,
-                speed: 1.0,
-            };
-        }
-    }
-    Detection::none()
+    read_soft(&soft, key, true)
 }
 
 
@@ -1436,5 +1497,58 @@ mod tests {
         let soft = soft_stream(&f, KEY, 3, 0.5, 9);
         let (status, bytes, copies) = complete_candidate(&soft, 0, 1.0, KEY).expect("reads");
         assert_eq!((status, bytes, copies), (Status::Verified, f, 3));
+    }
+
+    /// Soft values the way the reader produces them: `amplitude` for a bit read cleanly and noise of
+    /// unit variance on top, so `amplitude` is the per-bit signal to noise in the reader's own units.
+    fn gaussian_soft(frame: &[u8], key: u64, copies: usize, drop_front: usize, amplitude: f32, seed: u64) -> Vec<f32> {
+        let one = stream(frame, key);
+        let mut state = seed | 1;
+        let mut uniform = move || (splitmix64(&mut state) >> 40) as f32 / (1u64 << 24) as f32;
+        let mut out = Vec::new();
+        for _ in 0..copies {
+            for &bit in &one {
+                // Sum of twelve uniforms minus six: close enough to a unit Gaussian.
+                let n: f32 = (0..12).map(|_| uniform()).sum::<f32>() - 6.0;
+                out.push(bit * amplitude + n);
+            }
+        }
+        out.split_off(drop_front.min(out.len()))
+    }
+
+    #[test]
+    fn pooling_sync_across_copies_reads_a_mark_too_faint_for_one_copys_sync_alone() {
+        // Soft values of three copies, the first 37 dropped as a crop would, at a per-bit signal to
+        // noise where one copy's 32-bit sync word is no louder than the false peaks around it. Three
+        // copies pooled are about 3 dB better, and name the frame's length as well. The two are
+        // compared over many noise draws so that this is a rate and not an anecdote.
+        let f = frame::encode(b"http://danbri.org/foaf", 0);
+        let trials = 30;
+        let (mut single, mut pooled) = (0, 0);
+        for seed in 0..trials {
+            let soft = gaussian_soft(&f, KEY, 3, 37, 0.8, seed + 100);
+            if read_soft(&soft, KEY, false).status == Status::Verified {
+                single += 1;
+            }
+            let found = read_soft(&soft, KEY, true);
+            if found.status == Status::Verified {
+                assert_eq!(found.frame, f, "a verified read has to be the frame that went in");
+                pooled += 1;
+            }
+        }
+        assert!(pooled >= trials * 2 / 3, "pooled read {pooled} of {trials}");
+        assert!(pooled > single + trials / 4, "pooled {pooled} against single-copy {single} of {trials}");
+    }
+
+    #[test]
+    fn pooled_sync_finds_nothing_in_soft_values_that_carry_no_mark() {
+        // The pooled search tries a thousand lengths and every offset, which is a lot of chances to
+        // see a pattern in noise. The frame's checks still gate it, and this is the evidence.
+        for seed in 0..40u64 {
+            let mut state = seed * 7 + 1;
+            let mut uniform = move || (splitmix64(&mut state) >> 40) as f32 / (1u64 << 24) as f32;
+            let soft: Vec<f32> = (0..2500).map(|_| (0..12).map(|_| uniform()).sum::<f32>() - 6.0).collect();
+            assert_eq!(read_soft(&soft, KEY, true).status, Status::NoMark, "seed {seed}");
+        }
     }
 }

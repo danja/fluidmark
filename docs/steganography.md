@@ -281,16 +281,18 @@ and 12 beyond it (speed, harsher filters and MP3, collusion), so the counts are 
 | Mark level | `loops` | `round60` |
 |---|---|---|
 | -20 dB | 29 of 32 | 31 of 32 |
-| -26 dB | 24 of 32 | 30 of 32 |
-| -32 dB | 20 of 32 | 22 of 32 |
-| -35 dB | 16 of 32 | 18 of 32 |
-| -38 dB | 0 of 32 | 4 of 32 |
+| -26 dB | 25 of 32 | 30 of 32 |
+| -32 dB | 20 of 32 | 25 of 32 |
+| -35 dB | 16 of 32 | 19 of 32 |
+| -38 dB | 0 of 32 | 13 of 32 |
 | -41 dB | 0 of 32 | 0 of 32 |
 
-The cliff is still there but it is at about -36 dB, not -23, and above it the loss is gradual. At -35 dB
-the untouched file and the mild attacks still read, and what goes first is noise, narrow filtering and,
-because the speed estimate needs a cleaner peak than a straight read does, speed changes. Below -38 dB
-nothing reads, not even the untouched file.
+The cliff is still there but it is at about -36 dB on the dynamic `loops` (1.8 copies, 46 s) and about -40 dB on
+the quiet recording (2.8 copies, 60 s), not -23, and above it the loss is gradual. At -35 dB the untouched
+file and the mild attacks still read, and what goes first is noise, narrow filtering and, because the speed
+estimate needs a cleaner peak than a straight read does, speed changes. Below the floor nothing reads, not
+even the untouched file. A longer track has more copies to combine and a lower floor; these hosts are a
+minute at most.
 
 The point of the sweep is that the level the scheme needs is lower than first thought, which matters
 because the level that is inaudible is a listening question and may well be lower than -20 dB.
@@ -323,6 +325,18 @@ copy at all, and the longer code had made that worse. It now adds in every copy,
 off by the end of the file or by a crop, each position getting what the copies that reach it have. More copies
 combined is not more false positives, since the frame's checks still decide. On `loops`, the short one: 12 of 32
 became 20 at -32 dB and 0 became 16 at -35 dB, with nothing lost on the longer recording.
+
+**Pooling the sync evidence across copies.** At -38 dB the reader found the boundary clearly (a peak 16 to 64
+standard deviations up) and then failed at sync: one copy's 32-bit sync word is no louder than the false
+peaks around it once the mark is faint, and the true copy start came third or fourth in the list while the
+first was a false peak. The reader now first sums the sync scores one period apart, for every frame length whose
+copy fits and every offset, and tries the best of those. A sum over three copies is about 3 dB better than one
+copy, it names the length so the header need not be read to learn it, and the frame's checks still gate the
+result. Measured on soft values with a controlled per-bit signal to noise, three copies, 37 values cropped
+off: at the level where one copy's sync reads 16 of 40 the pooled search reads 40 of 40, and at the level below
+it, 0 of 40 against 26 of 40. On the real hosts it took `round60` at -38 dB from 4 to 13 of 32 and left `loops`
+alone: `loops` is limited by the code, not by sync, with under two copies to combine. Pure noise, a thousand
+lengths and every offset in it, is tested to stay empty.
 
 **A bug the first sweep found.** At -32 dB on `loops` the reader aborted, which in Wasm is a trap and not an error.
 The header read from one copy and the header read from the combination of copies could disagree about the frame's
