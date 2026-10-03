@@ -15,6 +15,7 @@ pub mod frame;
 pub mod lfs;
 pub mod dsp;
 pub mod ecc;
+pub mod estimate;
 pub mod fft;
 pub mod filter;
 pub mod resample;
@@ -431,6 +432,9 @@ pub const ATTACK_CROP_FRACTION: u32 = 9;
 pub const REMOVE_SCRUB_LOW_BITS: u32 = 20;
 pub const REMOVE_RANDOMISE_LOW_BITS: u32 = 21;
 
+/// Removal of the spread-spectrum mark by estimating its carrier from the audio, with no key.
+pub const REMOVE_ESTIMATE_SUBTRACT: u32 = 22;
+
 /// Apply one attack to an audio buffer, in place.
 ///
 /// One export rather than ten, because the harness is the only caller and a table of ids in one
@@ -477,6 +481,7 @@ pub unsafe extern "C" fn core_attack(
         }
         REMOVE_SCRUB_LOW_BITS => attack::scrub_low_bits(&input),
         REMOVE_RANDOMISE_LOW_BITS => attack::randomise_low_bits(&input, seed),
+        REMOVE_ESTIMATE_SUBTRACT => estimate::estimate_and_subtract(&input),
         _ => return CORE_ERR_RANGE,
     };
 

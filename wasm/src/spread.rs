@@ -172,7 +172,7 @@ pub fn copy_samples(frame_bytes: usize) -> usize {
     copy_bits(frame_bytes) * CHIPS
 }
 
-fn band_limit(samples: &[f32]) -> Vec<f32> {
+pub(crate) fn band_limit(samples: &[f32]) -> Vec<f32> {
     lowpass(&highpass(samples, BAND_LO, RATE as f32), BAND_HI, RATE as f32)
 }
 
@@ -322,7 +322,7 @@ pub fn embed_in_place(
 
 /// Coefficients of a prediction-error filter `1 + a1 z^-1 + ... + ap z^-p`, fitted to `samples`
 /// by Levinson-Durbin, or `None` for a signal with no energy to fit.
-fn whitening_filter(samples: &[f32]) -> Option<Vec<f64>> {
+pub(crate) fn whitening_filter(samples: &[f32]) -> Option<Vec<f64>> {
     let fit = &samples[..samples.len().min(1 << 21)];
     let mut r = [0.0f64; LPC_ORDER + 1];
     for (lag, slot) in r.iter_mut().enumerate() {
@@ -357,7 +357,7 @@ fn whitening_filter(samples: &[f32]) -> Option<Vec<f64>> {
     Some(a)
 }
 
-fn fir(samples: &[f32], a: &[f64]) -> Vec<f32> {
+pub(crate) fn fir(samples: &[f32], a: &[f64]) -> Vec<f32> {
     (0..samples.len())
         .map(|n| {
             let mut acc = 0.0f64;
@@ -1194,6 +1194,32 @@ mod tests {
         assert_eq!(found.status, Status::Verified, "{found:?}");
         assert_eq!(found.frame, payload());
         assert!(found.copies >= 1);
+    }
+
+
+    fn snr_db(reference: &[f32], other: &[f32]) -> f64 {
+        let signal: f64 = reference.iter().map(|&v| (v as f64).powi(2)).sum();
+        let noise: f64 = reference.iter().zip(other).map(|(&a, &b)| ((a - b) as f64).powi(2)).sum();
+        10.0 * (signal / noise.max(1e-30)).log10()
+    }
+
+    #[test]
+    fn someone_with_no_key_can_recover_the_carrier_from_the_audio_alone() {
+        // A characterisation, not a goal. The carrier is one waveform repeated, so stacking blocks with
+        // the signs that make them agree recovers it without the key, and this measures how closely.
+        // What that lets an attacker do to the mark is measured on real music by the harness, because
+        // a synthetic host whose partials repeat from block to block lets the stack pick up the music
+        // as well, which says something about the host and not about the mark. If the scheme is ever
+        // changed so that this stops being true, the documentation's section on removal is what to
+        // update, and this test is what turns red.
+        let (_, out) = marked(seconds_needed() * 2.2);
+        let est = crate::estimate::analyse(&out).expect("estimates");
+        let reference = expected_carrier(KEY, &est.whitener);
+        let rn = reference.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+        let best = (0..CHIPS)
+            .map(|shift| (0..CHIPS).map(|i| est.carrier[i] * reference[(i + shift) % CHIPS] as f64).sum::<f64>().abs() / rn)
+            .fold(0.0f64, f64::max);
+        assert!(best > 0.9, "the estimate has a cosine of {best:.3} with the true carrier");
     }
 
     #[test]

@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { loadCore } from '../src/load-node.js';
-import { ATTACK_LIST, ATTACKS, EXTRA_LIST, REMOVAL_LIST } from '../src/attacks.js';
+import { ATTACK_LIST, ATTACKS, EXTRA_LIST, REMOVAL_LIST, REMOVAL_SPREAD_LIST } from '../src/attacks.js';
 import { bitErrors, frame, unframe } from '../src/frame.js';
 import { decodeWavChannels, encodeWavChannels } from '../src/wav.js';
 import * as spread from '../src/spread.js';
@@ -220,6 +220,23 @@ export async function main(argv) {
     // that was not measuring what it appears to.
     for (const row of scheme === 'lsb' ? REMOVAL_LIST : []) {
       add(row.name, attackAll(row.id, row.param, row.seed ?? 0), 'needs no key');
+    }
+    // For the spread scheme: a removal that needs no key, reported with what it cost the music, since
+    // a removal that wrecks the track is not an attack, and one that costs nothing audible is.
+    if (scheme === 'spread') {
+      for (const row of REMOVAL_SPREAD_LIST) {
+        const attacked = attackAll(row.id, row.param, row.seed ?? 0);
+        let signal = 0;
+        let noise = 0;
+        attacked.forEach((channel, c) => {
+          for (let i = 0; i < channel.length; i += 1) {
+            signal += marked[c][i] ** 2;
+            noise += (marked[c][i] - channel[i]) ** 2;
+          }
+        });
+        const snr = 10 * Math.log10(signal / Math.max(noise, 1e-30));
+        add(row.name, attacked, `needs no key; the file moved ${snr.toFixed(1)} dB below itself`);
+      }
     }
 
     // The lossy rows need an external binary, so they are reported separately whether or not it

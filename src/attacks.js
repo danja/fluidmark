@@ -20,6 +20,7 @@ export const ATTACKS = {
   // Removal rather than degradation: attempts to take the mark out.
   REMOVE_SCRUB_LOW_BITS: 20,
   REMOVE_RANDOMISE_LOW_BITS: 21,
+  REMOVE_ESTIMATE_SUBTRACT: 22,
 };
 
 /**
@@ -83,4 +84,14 @@ export const EXTRA_LIST = [
   { id: ATTACKS.LOWPASS, name: 'low-pass 4 kHz', param: 4000 },
   { id: ATTACKS.LOWPASS, name: 'low-pass 2 kHz', param: 2000 },
   { id: ATTACKS.GAIN_DB, name: 'gain -30 dB', param: -30 },
+];
+
+/**
+ * Removal attacks on the spread-spectrum mark. The LSB scrubs in `REMOVAL_LIST` say nothing about it.
+ *
+ * This one needs no key: it estimates the repeated carrier from the audio and subtracts it, which
+ * is what a mark made of one waveform repeated is open to. See `wasm/src/estimate.rs`.
+ */
+export const REMOVAL_SPREAD_LIST = [
+  { id: ATTACKS.REMOVE_ESTIMATE_SUBTRACT, name: 'REMOVE blind carrier estimation', param: 0 },
 ];
