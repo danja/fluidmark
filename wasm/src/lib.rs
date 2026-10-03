@@ -13,6 +13,7 @@ pub mod attack;
 pub mod codec;
 pub mod frame;
 pub mod lfs;
+pub mod mark_stream;
 pub mod dsp;
 pub mod ecc;
 pub mod estimate;
@@ -27,6 +28,49 @@ pub mod signal;
 pub mod tables;
 
 use std::alloc::Layout;
+
+#[cfg(test)]
+pub mod alloc_count {
+    //! wasm/src/alloc_count.rs (inline)
+    //!
+    //! A counting allocator for the tests, so that "allocates nothing while processing" is a number.
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            COUNT.with(|c| c.set(c.get() + 1));
+            System.alloc(layout)
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout)
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            COUNT.with(|c| c.set(c.get() + 1));
+            System.realloc(ptr, layout, new_size)
+        }
+    }
+
+    /// Allocations this thread has made so far.
+    pub fn get() -> u64 {
+        COUNT.with(|c| c.get())
+    }
+
+    /// The count now, for taking a difference.
+    pub fn reset() -> u64 {
+        get()
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static COUNTING: alloc_count::Counting = alloc_count::Counting;
 
 
 /// Bumped whenever a signature here changes. Hosts check it at startup, because a stale
@@ -703,4 +747,148 @@ pub unsafe extern "C" fn core_nmr(
             CORE_OK
         }
     }
+}
+
+
+/// A streaming embedder, for a host that feeds audio a block at a time: a plugin. See `mark_stream.rs` and
+/// `docs/vst.md`.
+///
+/// The handle is created off the audio thread, which is where everything is allocated. `core_mark_process`
+/// allocates nothing, takes no lock and cannot unwind, so it is safe to call from an audio callback.
+/// Output is the input marked and delayed by `core_mark_latency()` samples, exactly.
+pub struct MarkHandle {
+    magic: u32,
+    stream: mark_stream::MaskedStream,
+}
+
+const MARK_MAGIC: u32 = 0x464d_4d53; // "FMMS"
+
+/// How many samples a stream delays what goes through it, to be reported to the host.
+#[no_mangle]
+pub extern "C" fn core_mark_latency() -> u32 {
+    mark_stream::LATENCY as u32
+}
+
+/// Create a stream, or null. `frame` is a whole frame (`frame_len` bytes, header included) as `core_frame`
+/// style framing produces it, and the stream takes a copy. `pos0` is the stream position of the first
+/// sample: a plugin passes the host's timeline position, so that a bounce and a re-bounce agree.
+///
+/// Null means a rate or channel count outside what the stream works at, or a frame that is too short to be
+/// one. Free the handle with `core_mark_destroy`, and not from the audio thread.
+#[no_mangle]
+pub unsafe extern "C" fn core_mark_create(
+    frame: *const u8,
+    frame_len: u32,
+    key_lo: u32,
+    key_hi: u32,
+    sample_rate: f64,
+    margin_db: f64,
+    channels: u32,
+    pos0: u64,
+) -> *mut MarkHandle {
+    if frame.is_null() || (frame_len as usize) < frame::HEADER_BYTES {
+        return std::ptr::null_mut();
+    }
+    let key = ((key_hi as u64) << 32) | key_lo as u64;
+    let bytes = std::slice::from_raw_parts(frame, frame_len as usize);
+    let Some((bits, period)) = spread::stream_parts(bytes, key) else {
+        return std::ptr::null_mut();
+    };
+    let Some(stream) = mark_stream::MaskedStream::new(bits, period, sample_rate, margin_db, channels as usize, pos0) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(MarkHandle { magic: MARK_MAGIC, stream }))
+}
+
+/// Process `frames` samples of every channel. `inputs` and `outputs` are arrays of one pointer per channel,
+/// as audio hosts hand them over. The two may be the same buffers. Returns `CORE_OK`, or an error code if the
+/// handle is not one of ours or a pointer is null. Real-time safe.
+#[no_mangle]
+pub unsafe extern "C" fn core_mark_process(
+    handle: *mut MarkHandle,
+    inputs: *const *const f32,
+    outputs: *const *mut f32,
+    frames: u32,
+) -> i32 {
+    if handle.is_null() || inputs.is_null() || outputs.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let h = &mut *handle;
+    if h.magic != MARK_MAGIC {
+        return CORE_ERR_MAGIC;
+    }
+    let n = frames as usize;
+    for c in 0..h.stream.channels() {
+        let (i, o) = (*inputs.add(c), *outputs.add(c));
+        if i.is_null() || o.is_null() {
+            return CORE_ERR_NULL;
+        }
+        if std::ptr::eq(i, o as *const f32) {
+            // Processing in place: the stream reads each sample before it writes the output for it, but it
+            // is a slice in and a slice out, so copy a block at a time through the stack.
+            let mut block = [0.0f32; 512];
+            let mut at = 0;
+            while at < n {
+                let len = 512.min(n - at);
+                block[..len].copy_from_slice(std::slice::from_raw_parts(i.add(at), len));
+                h.stream.process_channel(c, &block[..len], std::slice::from_raw_parts_mut(o.add(at), len));
+                at += len;
+            }
+        } else {
+            h.stream.process_channel(c, std::slice::from_raw_parts(i, n), std::slice::from_raw_parts_mut(o, n));
+        }
+    }
+    CORE_OK
+}
+
+/// Move the margin, in dB under the masking threshold. Takes effect at the next frame without a step.
+#[no_mangle]
+pub unsafe extern "C" fn core_mark_set_margin(handle: *mut MarkHandle, margin_db: f64) -> i32 {
+    if handle.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let h = &mut *handle;
+    if h.magic != MARK_MAGIC {
+        return CORE_ERR_MAGIC;
+    }
+    h.stream.set_margin_db(margin_db);
+    CORE_OK
+}
+
+/// Free a stream. Not from the audio thread. A null is accepted and ignored, and a pointer that is not one of
+/// ours is refused rather than freed.
+#[no_mangle]
+pub unsafe extern "C" fn core_mark_destroy(handle: *mut MarkHandle) -> i32 {
+    if handle.is_null() {
+        return CORE_OK;
+    }
+    if (*handle).magic != MARK_MAGIC {
+        return CORE_ERR_MAGIC;
+    }
+    (*handle).magic = 0;
+    drop(Box::from_raw(handle));
+    CORE_OK
+}
+
+
+/// Wrap a payload in a frame (magic, version, flags, length, CRC-16), for a host that has no framing of its own.
+///
+/// Writes the frame to `out` and returns its length, or a negative error code: the payload may be up to 65535
+/// bytes, and `out` has to hold `core_frame_bytes_for(len)`. One framing in the whole system, and this is how a
+/// C++ host reaches it, so it never writes a second one.
+#[no_mangle]
+pub unsafe extern "C" fn core_frame_encode(payload: *const u8, len: u32, flags: u8, out: *mut u8, cap: u32) -> i32 {
+    if (payload.is_null() && len > 0) || out.is_null() {
+        return CORE_ERR_NULL;
+    }
+    if len > u16::MAX as u32 {
+        return CORE_ERR_LENGTH;
+    }
+    let bytes = if len == 0 { &[][..] } else { std::slice::from_raw_parts(payload, len as usize) };
+    let framed = frame::encode(bytes, flags);
+    if framed.len() > cap as usize {
+        return CORE_ERR_LENGTH;
+    }
+    std::ptr::copy_nonoverlapping(framed.as_ptr(), out, framed.len());
+    framed.len() as i32
 }

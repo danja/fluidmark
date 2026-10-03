@@ -82,6 +82,17 @@ fn spread_db(dz: f64) -> f64 {
 
 /// Power spectrum of a Hann-windowed frame, scaled so that a full-scale sine is `FULL_SCALE_SPL` dB in
 /// its peak bin, as linear power. `None` for a frame that runs off the end.
+fn power_spectrum_into(frame: &[f32], window: &[f64], norm: f64, re: &mut [f64], im: &mut [f64], out: &mut [f64]) {
+    for ((slot, &x), &w) in re.iter_mut().zip(frame).zip(window) {
+        *slot = x as f64 * w;
+    }
+    im.iter_mut().for_each(|v| *v = 0.0);
+    fft(re, im, false);
+    for k in 0..FRAME / 2 {
+        out[k] = (re[k] * re[k] + im[k] * im[k]) / (norm * norm);
+    }
+}
+
 fn power_spectrum(frame: &[f32], window: &[f64], norm: f64) -> Vec<f64> {
     let mut re: Vec<f64> = frame.iter().zip(window).map(|(&x, &w)| x as f64 * w).collect();
     let mut im = vec![0.0; FRAME];
@@ -141,6 +152,11 @@ pub struct FrameMeter {
     window: Vec<f64>,
     norm: f64,
     pub bin_hz: f64,
+    // Scratch, owned so that measuring a frame allocates nothing: the streaming embedder calls this on the
+    // audio thread, where an allocation is a lock and a lock is a dropout.
+    re: Vec<f64>,
+    im: Vec<f64>,
+    power: Vec<f64>,
 }
 
 impl FrameMeter {
@@ -149,17 +165,30 @@ impl FrameMeter {
             .map(|n| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / FRAME as f64).cos())
             .collect();
         let norm = window.iter().sum::<f64>() / 2.0;
-        FrameMeter { window, norm, bin_hz: sample_rate / FRAME as f64 }
+        FrameMeter {
+            window,
+            norm,
+            bin_hz: sample_rate / FRAME as f64,
+            re: vec![0.0; FRAME],
+            im: vec![0.0; FRAME],
+            power: vec![0.0; FRAME / 2],
+        }
+    }
+
+    fn spectrum(&mut self, frame: &[f32]) {
+        power_spectrum_into(frame, &self.window, self.norm, &mut self.re, &mut self.im, &mut self.power);
     }
 
     /// Band energies of `frame`, in the units thresholds are in.
-    pub fn energy(&self, frame: &[f32]) -> [f64; BANDS] {
-        band_energy(&power_spectrum(frame, &self.window, self.norm), self.bin_hz).0
+    pub fn energy(&mut self, frame: &[f32]) -> [f64; BANDS] {
+        self.spectrum(frame);
+        band_energy(&self.power, self.bin_hz).0
     }
 
     /// The masking threshold of `frame`, per band, in the same units.
-    pub fn thresholds(&self, frame: &[f32]) -> [f64; BANDS] {
-        let (energy, flat) = band_energy(&power_spectrum(frame, &self.window, self.norm), self.bin_hz);
+    pub fn thresholds(&mut self, frame: &[f32]) -> [f64; BANDS] {
+        self.spectrum(frame);
+        let (energy, flat) = band_energy(&self.power, self.bin_hz);
         thresholds(&energy, &flat, self.bin_hz)
     }
 }

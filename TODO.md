@@ -172,13 +172,12 @@ deterministic tests that run without a DAW.
 
 **Mark**, in order, each ending in something that runs:
 
-- [ ] **1. A streaming embedder in the Rust core**, and make it the only embedder. A hop state machine, everything
-      preallocated, the carrier a function of stream position, a resampler that does not need the length, an exact
-      stated latency, and golden-vector equality with today's offline output (kept as the reference). The offline
-      call becomes a wrapper over it. The page and the tools gain with it: long files no longer need the whole track
-      in memory, and progress becomes possible.
-- [ ] **2. The C ABI for it** (create, reconfigure, process, latency, destroy), `docs/ffi.md`, and `link_check.cpp`
-      extended so a C++ program drives a stream. Settle the static-link flags here.
+- [x] **1. A streaming embedder in the Rust core**, and the only embedder: `wasm/src/mark_stream.rs`, bit-identical to the
+      whole-file one it replaced except the last three hops, block-size independent, exact latency (3072), position-based,
+      nothing allocated while it runs. The offline masked call is a wrapper over it, so memory for a long file dropped too.
+- [ ] **2. The C ABI for it.** Create, process, latency, margin and destroy are done and a C++ link check drives them
+      (`docs/ffi.md`). Left: a new identifier or key taking effect at a copy boundary, with the old configuration freed
+      off the audio thread, and the static-link flags settled for a VST3 bundle rather than a test binary.
 - [ ] **3. The C++ engine and its CTest suite**, with no DPF and no DAW: bit equality, block-size independence, no
       allocation in `process` (counted), exact latency, a round trip through `core_ss_detect`, parameter behaviour,
       four sample rates, mono and stereo, and the model's verdict through `core_nmr`.

@@ -121,6 +121,23 @@ Everything below runs under CTest with no host, as downspout's cores do, plus th
 - **Host checks, environment-dependent and reported separately**: `pluginval` (or the VST3 SDK's validator) on the
   bundle, and loading it in Carla and REAPER. These need tools and a person (`HUMANS.md`).
 
+## Where it stands
+
+**Milestones 1 and the core of 2 are done** (2026-10-03). `wasm/src/mark_stream.rs` is the streaming embedder and
+the offline masked embedder is now that stream fed a whole channel, so every host runs one code path. It matches the
+whole-file embedder it replaced to the bit, at 44.1 and 48 kHz, everywhere except the last three hops, where the
+old one stopped its carrier at the end of the file and clamped the last frame's neighbours and the stream is followed
+by silence instead. The mark therefore fades over the final hop, which is the right thing at the end of a track and
+a difference of a few tens of milliseconds in a minute. The latency is exactly `3 * HOP = 3072` samples (70 ms at
+44.1 kHz, 64 ms at 48), held by a test. Output is the same for any block size, from 1 sample to 4096 and mixed, and
+for a stream that starts part-way along a timeline. Nothing is allocated while it runs, counted by a wrapped
+allocator with a control that the counter counts. The C ABI (`docs/ffi.md`) and a C++ link check that drives it with
+a plugin's call pattern pass.
+
+Left in milestone 2 and then 3: a new identifier or key at a copy boundary (the two configurations alive across the
+boundary, the old one freed off the audio thread), the model at 88.2 and 96 kHz, and the C++ engine with its own
+CTest suite.
+
 ## Milestones
 
 Each ends with something that runs, and each is useful before the next.

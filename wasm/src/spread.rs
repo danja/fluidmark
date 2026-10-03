@@ -41,7 +41,10 @@ use crate::fft::fft;
 use crate::filter::{highpass, lowpass, BandPass};
 use crate::frame::{self, FrameError, HEADER_BYTES};
 use crate::lfs::splitmix64;
-use crate::psycho::{self, FrameMeter, BANDS, FRAME, HOP};
+use crate::mark_stream;
+use crate::psycho::FRAME;
+#[cfg(test)]
+use crate::psycho;
 use crate::resample;
 
 /// The rate the mark is defined at. Audio at any other rate is resampled to this to be read, and
@@ -270,16 +273,22 @@ pub enum Level {
     Masked,
 }
 
+/// The bits and the carrier period for a frame and a key, for a streaming embedder that is built from them.
+/// `None` for a frame too short to be one.
+pub fn stream_parts(frame_bytes: &[u8], key: u64) -> Option<(Vec<f32>, Vec<f32>)> {
+    if frame_bytes.len() < HEADER_BYTES {
+        return None;
+    }
+    Some((stream(frame_bytes, key), carrier(key)))
+}
+
 /// Add the mark shaped to sit `margin_db` under the masking threshold, in place.
 ///
-/// The thresholds are measured first, from the audio as it is, because the mark added in the first
-/// frames would otherwise be part of what the later ones are measured against. Then each frame of the
-/// carrier is windowed, taken to the frequency domain, scaled band by band so that its energy in each
-/// critical band is the threshold there plus the margin, interpolated smoothly in dB between band
-/// centres so the gain has no steps, and overlap-added back. A frame's threshold is the lowest of its
-/// own and its neighbours', since a mark that is under the threshold in the quiet before a loud note
-/// is under it at the note too, and the other way about is where pre-echo is heard. Digital silence is
-/// left silent.
+/// This is `mark_stream::MaskedStream` fed the whole channel: the plugin and the page run the same code, so
+/// they produce the same bits. The stream delays its output by `LATENCY` samples, so the channel is fed
+/// followed by that much silence and the output is taken from `LATENCY` onwards. Digital silence is left
+/// silent, and the end of the audio is followed by silence, which means the last frame's threshold is the
+/// lowest of its own and silence's and the mark fades out over the last hop rather than stopping.
 fn embed_masked_in_place(
     samples: &mut [f32],
     bits: &[f32],
@@ -287,124 +296,33 @@ fn embed_masked_in_place(
     key_rate: (f64, usize),
     margin_db: f64,
 ) {
-    let (sample_rate, n44) = key_rate;
+    let (sample_rate, _) = key_rate;
+    let Some(mut stream) =
+        mark_stream::MaskedStream::new(bits.to_vec(), period.to_vec(), sample_rate, margin_db, 1, 0)
+    else {
+        return;
+    };
     let n = samples.len();
-    let meter = FrameMeter::new(sample_rate);
-    let frames = n / HOP + 2;
-    let margin = 10f64.powf(margin_db / 10.0);
-
-    let frame_at = |host: &[f32], f: usize| -> [f32; FRAME] {
-        let mut out = [0.0f32; FRAME];
-        let start = f as isize * HOP as isize - HOP as isize;
-        for (j, slot) in out.iter_mut().enumerate() {
-            let i = start + j as isize;
-            if i >= 0 && (i as usize) < host.len() {
-                *slot = host[i as usize];
+    // A block at a time, so a long channel does not need a second copy of itself. Input is read from the
+    // slice before the output for the same stretch is written, and output lags input, so it can be written
+    // over what has already been read.
+    const BLOCK: usize = 4096;
+    let mut input = [0.0f32; BLOCK];
+    let mut output = [0.0f32; BLOCK];
+    let mut t = 0usize;
+    while t < n + mark_stream::LATENCY {
+        let len = BLOCK.min(n + mark_stream::LATENCY - t);
+        for (i, slot) in input[..len].iter_mut().enumerate() {
+            *slot = if t + i < n { samples[t + i] } else { 0.0 };
+        }
+        stream.process_channel(0, &input[..len], &mut output[..len]);
+        for (i, &y) in output[..len].iter().enumerate() {
+            let time = t + i;
+            if time >= mark_stream::LATENCY {
+                samples[time - mark_stream::LATENCY] = y;
             }
         }
-        out
-    };
-
-    // Pass 1: thresholds, from the audio as it is.
-    let mut silent = Vec::with_capacity(frames);
-    let mut threshold: Vec<[f64; BANDS]> = Vec::with_capacity(frames);
-    for f in 0..frames {
-        let frame = frame_at(samples, f);
-        silent.push(frame.iter().all(|&x| x == 0.0));
-        threshold.push(meter.thresholds(&frame));
-    }
-    let lowest: Vec<[f64; BANDS]> = (0..frames)
-        .map(|f| {
-            let mut t = threshold[f];
-            for g in [f.saturating_sub(1), (f + 1).min(frames - 1)] {
-                for b in 0..BANDS {
-                    t[b] = t[b].min(threshold[g][b]);
-                }
-            }
-            t
-        })
-        .collect();
-
-    // The carrier at the output rate, at any index. Past the end of the 44.1 kHz stream it is silence.
-    let carrier_44 = |i: usize| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS];
-    let resampler = if (sample_rate - RATE).abs() < 1e-9 { None } else { resample::Resampler::new(n44, RATE, sample_rate) };
-    let carrier_out = |i: usize| -> f32 {
-        match &resampler {
-            None => carrier_44(i),
-            Some(r) if i < r.out_len() => r.sample_at(i, &carrier_44),
-            Some(_) => 0.0,
-        }
-    };
-
-    let sine: Vec<f64> = (0..FRAME).map(|j| ((j as f64 + 0.5) * std::f64::consts::PI / FRAME as f64).sin()).collect();
-    let edges = psycho::band_edges();
-    let centres: Vec<f64> = (0..BANDS).map(|b| (edges[b] + edges[b + 1]) / 2.0).collect();
-    let (mut re, mut im) = (vec![0.0f64; FRAME], vec![0.0f64; FRAME]);
-
-    // Pass 2: the shaped carrier, added in place.
-    for f in 0..frames {
-        if silent[f] {
-            continue;
-        }
-        let start = f as isize * HOP as isize - HOP as isize;
-        let mut c = [0.0f32; FRAME];
-        for (j, slot) in c.iter_mut().enumerate() {
-            let i = start + j as isize;
-            if i >= 0 && (i as usize) < n {
-                *slot = carrier_out(i as usize);
-            }
-        }
-        let own = meter.energy(&c);
-        // Gain per band as a power ratio in dB, where the carrier has anything in the band to scale.
-        let gain_db: Vec<Option<f64>> = (0..BANDS)
-            .map(|b| {
-                if own[b] > 1e-30 {
-                    Some(10.0 * (lowest[f][b] * margin / own[b]).log10())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let valid: Vec<usize> = (0..BANDS).filter(|&b| gain_db[b].is_some()).collect();
-        if valid.is_empty() {
-            continue;
-        }
-        // `gain_db` is a power ratio in dB, so the amplitude gain is ten to the power of a twentieth of it.
-        let amplitude = |hz: f64| -> f64 {
-            let at = valid.partition_point(|&b| centres[b] < hz);
-            let db = if at == 0 {
-                gain_db[valid[0]].unwrap()
-            } else if at == valid.len() {
-                gain_db[valid[valid.len() - 1]].unwrap()
-            } else {
-                let (lo, hi) = (valid[at - 1], valid[at]);
-                let t = (hz - centres[lo]) / (centres[hi] - centres[lo]);
-                gain_db[lo].unwrap() * (1.0 - t) + gain_db[hi].unwrap() * t
-            };
-            10f64.powf(db / 20.0)
-        };
-
-        for j in 0..FRAME {
-            re[j] = c[j] as f64 * sine[j];
-            im[j] = 0.0;
-        }
-        fft(&mut re, &mut im, false);
-        for k in 0..=FRAME / 2 {
-            let g = amplitude(k as f64 * meter.bin_hz);
-            re[k] *= g;
-            im[k] *= g;
-            if k > 0 && k < FRAME / 2 {
-                re[FRAME - k] *= g;
-                im[FRAME - k] *= g;
-            }
-        }
-        fft(&mut re, &mut im, true);
-        for j in 0..FRAME {
-            let i = start + j as isize;
-            if i >= 0 && (i as usize) < n {
-                samples[i as usize] += (re[j] * sine[j]) as f32;
-            }
-        }
+        t += len;
     }
 }
 
@@ -1829,5 +1747,253 @@ mod tests {
             let soft: Vec<f32> = (0..2500).map(|_| (0..12).map(|_| uniform()).sum::<f32>() - 6.0).collect();
             assert_eq!(read_soft(&soft, KEY, true).status, Status::NoMark, "seed {seed}");
         }
+    }
+
+    // The masked embedder as it was before it streamed: whole vectors of thresholds and the carrier added
+    // frame by frame. Kept so that the stream is checked against what it replaced, bit for bit.
+    use crate::fft::fft;
+    use crate::psycho::{FrameMeter, BANDS, HOP};
+    fn embed_masked_reference(
+        samples: &mut [f32],
+        bits: &[f32],
+        period: &[f32],
+        key_rate: (f64, usize),
+        margin_db: f64,
+    ) {
+        let (sample_rate, n44) = key_rate;
+        let n = samples.len();
+        let mut meter = FrameMeter::new(sample_rate);
+        let frames = n / HOP + 2;
+        let margin = 10f64.powf(margin_db / 10.0);
+    
+        let frame_at = |host: &[f32], f: usize| -> [f32; FRAME] {
+            let mut out = [0.0f32; FRAME];
+            let start = f as isize * HOP as isize - HOP as isize;
+            for (j, slot) in out.iter_mut().enumerate() {
+                let i = start + j as isize;
+                if i >= 0 && (i as usize) < host.len() {
+                    *slot = host[i as usize];
+                }
+            }
+            out
+        };
+    
+        // Pass 1: thresholds, from the audio as it is.
+        let mut silent = Vec::with_capacity(frames);
+        let mut threshold: Vec<[f64; BANDS]> = Vec::with_capacity(frames);
+        for f in 0..frames {
+            let frame = frame_at(samples, f);
+            silent.push(frame.iter().all(|&x| x == 0.0));
+            threshold.push(meter.thresholds(&frame));
+        }
+        let lowest: Vec<[f64; BANDS]> = (0..frames)
+            .map(|f| {
+                let mut t = threshold[f];
+                for g in [f.saturating_sub(1), (f + 1).min(frames - 1)] {
+                    for b in 0..BANDS {
+                        t[b] = t[b].min(threshold[g][b]);
+                    }
+                }
+                t
+            })
+            .collect();
+    
+        // The carrier at the output rate, at any index. Past the end of the 44.1 kHz stream it is silence.
+        let carrier_44 = |i: usize| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS];
+        let resampler = if (sample_rate - RATE).abs() < 1e-9 { None } else { resample::Resampler::new(n44, RATE, sample_rate) };
+        let carrier_out = |i: usize| -> f32 {
+            match &resampler {
+                None => carrier_44(i),
+                Some(r) if i < r.out_len() => r.sample_at(i, &carrier_44),
+                Some(_) => 0.0,
+            }
+        };
+    
+        let sine: Vec<f64> = (0..FRAME).map(|j| ((j as f64 + 0.5) * std::f64::consts::PI / FRAME as f64).sin()).collect();
+        let edges = psycho::band_edges();
+        let centres: Vec<f64> = (0..BANDS).map(|b| (edges[b] + edges[b + 1]) / 2.0).collect();
+        let (mut re, mut im) = (vec![0.0f64; FRAME], vec![0.0f64; FRAME]);
+    
+        // Pass 2: the shaped carrier, added in place.
+        for f in 0..frames {
+            if silent[f] {
+                continue;
+            }
+            let start = f as isize * HOP as isize - HOP as isize;
+            let mut c = [0.0f32; FRAME];
+            for (j, slot) in c.iter_mut().enumerate() {
+                let i = start + j as isize;
+                if i >= 0 && (i as usize) < n {
+                    *slot = carrier_out(i as usize);
+                }
+            }
+            let own = meter.energy(&c);
+            // Gain per band as a power ratio in dB, where the carrier has anything in the band to scale.
+            let gain_db: Vec<Option<f64>> = (0..BANDS)
+                .map(|b| {
+                    if own[b] > 1e-30 {
+                        Some(10.0 * (lowest[f][b] * margin / own[b]).log10())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let valid: Vec<usize> = (0..BANDS).filter(|&b| gain_db[b].is_some()).collect();
+            if valid.is_empty() {
+                continue;
+            }
+            // `gain_db` is a power ratio in dB, so the amplitude gain is ten to the power of a twentieth of it.
+            let amplitude = |hz: f64| -> f64 {
+                let at = valid.partition_point(|&b| centres[b] < hz);
+                let db = if at == 0 {
+                    gain_db[valid[0]].unwrap()
+                } else if at == valid.len() {
+                    gain_db[valid[valid.len() - 1]].unwrap()
+                } else {
+                    let (lo, hi) = (valid[at - 1], valid[at]);
+                    let t = (hz - centres[lo]) / (centres[hi] - centres[lo]);
+                    gain_db[lo].unwrap() * (1.0 - t) + gain_db[hi].unwrap() * t
+                };
+                10f64.powf(db / 20.0)
+            };
+    
+            for j in 0..FRAME {
+                re[j] = c[j] as f64 * sine[j];
+                im[j] = 0.0;
+            }
+            fft(&mut re, &mut im, false);
+            for k in 0..=FRAME / 2 {
+                let g = amplitude(k as f64 * meter.bin_hz);
+                re[k] *= g;
+                im[k] *= g;
+                if k > 0 && k < FRAME / 2 {
+                    re[FRAME - k] *= g;
+                    im[FRAME - k] *= g;
+                }
+            }
+            fft(&mut re, &mut im, true);
+            for j in 0..FRAME {
+                let i = start + j as isize;
+                if i >= 0 && (i as usize) < n {
+                    samples[i as usize] += (re[j] * sine[j]) as f32;
+                }
+            }
+        }
+    }
+    
+
+    fn bits_and_period(key: u64) -> (Vec<f32>, Vec<f32>) {
+        (stream(&payload(), key), carrier(key))
+    }
+
+    #[test]
+    fn the_stream_matches_the_whole_file_embedder_bit_for_bit_away_from_the_end() {
+        for rate in [44_100.0f64, 48_000.0] {
+            let host = music(seconds_needed() * 1.3, rate, 5);
+            let (bits, period) = bits_and_period(KEY);
+            let n44 = ((host.len() as f64) * RATE / rate).ceil() as usize;
+            let mut reference = host.clone();
+            embed_masked_reference(&mut reference, &bits, &period, (rate, n44), -6.0);
+            let mut streamed = host.clone();
+            embed_masked_in_place(&mut streamed, &bits, &period, (rate, n44), -6.0);
+            // The reference stops the carrier at the end of the file and clamps the last frame's
+            // neighbours; the stream carries on and is followed by silence. Only the last three hops differ.
+            let safe = host.len() - 3 * HOP;
+            let differing = (0..safe).filter(|&i| reference[i] != streamed[i]).count();
+            assert_eq!(differing, 0, "{rate} Hz: {differing} of {safe} samples differ");
+            assert_ne!(streamed[safe..], host[safe..], "and the tail is still marked");
+        }
+    }
+
+    #[test]
+    fn the_stream_gives_the_same_bits_whatever_the_block_size() {
+        let host = music(seconds_needed() * 1.1, RATE, 9);
+        let (bits, period) = bits_and_period(KEY);
+        let run = |sizes: &[usize]| -> Vec<f32> {
+            let mut s = mark_stream::MaskedStream::new(bits.clone(), period.clone(), RATE, -6.0, 1, 0).unwrap();
+            let mut out = Vec::new();
+            let mut at = 0usize;
+            let mut which = 0usize;
+            while at < host.len() {
+                let len = sizes[which % sizes.len()].min(host.len() - at);
+                let mut block = vec![0.0f32; len];
+                s.process_channel(0, &host[at..at + len], &mut block);
+                out.extend(block);
+                at += len;
+                which += 1;
+            }
+            out
+        };
+        let whole = run(&[host.len()]);
+        for sizes in [vec![1usize], vec![7], vec![64], vec![480], vec![1024], vec![4096], vec![1, 100, 3, 1023, 1025, 17]] {
+            assert_eq!(run(&sizes), whole, "block sizes {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn the_latency_is_exactly_what_it_is_reported_to_be() {
+        // With the mark turned right down, a sample comes out where it went in, `LATENCY` later.
+        let host = music(5.0, RATE, 2);
+        let (bits, period) = bits_and_period(KEY);
+        let mut s = mark_stream::MaskedStream::new(bits, period, RATE, -200.0, 1, 0).unwrap();
+        let mut out = vec![0.0f32; host.len()];
+        s.process_channel(0, &host, &mut out);
+        assert!(out[..mark_stream::LATENCY].iter().all(|&v| v == 0.0), "silence before the first sample");
+        let worst = (mark_stream::LATENCY..host.len())
+            .map(|t| (out[t] - host[t - mark_stream::LATENCY]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "output is the input delayed by {} samples, to {worst}", mark_stream::LATENCY);
+    }
+
+    #[test]
+    fn a_stream_started_part_way_along_the_timeline_gives_the_same_mark_for_the_same_position() {
+        // The carrier is a function of position. A stream that begins `offset` samples in, fed the same audio,
+        // marks each sample with what that position gets in a stream that began at zero, wherever the
+        // position is a whole number of hops from the start so the frames line up.
+        let host = music(seconds_needed() * 1.2, RATE, 4);
+        let (bits, period) = bits_and_period(KEY);
+        let offset = 50 * HOP;
+        let mut a = mark_stream::MaskedStream::new(bits.clone(), period.clone(), RATE, -6.0, 1, 0).unwrap();
+        let mut b = mark_stream::MaskedStream::new(bits, period, RATE, -6.0, 1, offset as u64).unwrap();
+        // `a` sees silence for `offset` samples and then the audio, so at the audio's start it is where `b` begins.
+        let silence = vec![0.0f32; offset];
+        let mut sink = vec![0.0f32; offset];
+        a.process_channel(0, &silence, &mut sink);
+        let mut out_a = vec![0.0f32; host.len()];
+        let mut out_b = vec![0.0f32; host.len()];
+        a.process_channel(0, &host, &mut out_a);
+        b.process_channel(0, &host, &mut out_b);
+        // `a` has silence before the audio and `b` has not, so the first audio frame's lowest-of-three threshold
+        // differs (`a` has a silent neighbour and `b` has no past). That reaches the first two hops of audio,
+        // which come out `LATENCY` later.
+        let from = mark_stream::LATENCY + 3 * HOP;
+        assert_eq!(out_a[from..], out_b[from..]);
+    }
+
+    #[test]
+    fn the_allocation_counter_counts() {
+        // The positive control for the test below: a counter that always reads zero would pass it.
+        let before = crate::alloc_count::reset();
+        let v: Vec<u8> = Vec::with_capacity(1000);
+        std::hint::black_box(&v);
+        assert!(crate::alloc_count::get() > before);
+    }
+
+    #[test]
+    fn the_stream_allocates_nothing_while_it_runs() {
+        // Real-time safety as a count rather than a claim: the global allocator is wrapped for the tests and
+        // counts what the thread asks of it between two points.
+        let host = music(4.0, RATE, 3);
+        let (bits, period) = bits_and_period(KEY);
+        let mut s = mark_stream::MaskedStream::new(bits, period, RATE, -6.0, 2, 0).unwrap();
+        let mut out = vec![0.0f32; 1000];
+        // Warm up so that nothing lazy is counted, then count.
+        s.process_channel(0, &host[..4000], &mut vec![0.0f32; 4000]);
+        let before = crate::alloc_count::reset();
+        for chunk in host[4000..60_000].chunks(1000) {
+            s.process_channel(0, chunk, &mut out[..chunk.len()]);
+            s.process_channel(1, chunk, &mut out[..chunk.len()]);
+        }
+        assert_eq!(crate::alloc_count::get() - before, 0, "allocations while processing");
     }
 }

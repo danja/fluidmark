@@ -103,3 +103,35 @@ The plugin links `libfluidmark_core.a` and calls the same functions the browser 
 in the plugin needs to know about Wasm, and nothing in the core needs to know it is being used
 by a plugin. That is the whole point of the decision: the plugin arrived late and cost nothing
 to accommodate, because the boundary was fixed for the browser and simply already existed.
+
+### The streaming embedder, which is what the plugin calls
+
+Written 2026-10-03 for `docs/vst.md`. Everything else in the boundary is a call that takes a whole buffer; this is the
+one that is a stream, for a host that hands over blocks.
+
+```c
+uint32_t core_mark_latency(void);          // samples between a sample going in and coming out marked: 3072
+void*    core_mark_create(const uint8_t* frame, uint32_t frame_len, uint32_t key_lo, uint32_t key_hi,
+                          double sample_rate, double margin_db, uint32_t channels, uint64_t pos0);
+int32_t  core_mark_process(void* handle, const float* const* inputs, float* const* outputs, uint32_t frames);
+int32_t  core_mark_set_margin(void* handle, double margin_db);
+int32_t  core_mark_destroy(void* handle);
+int32_t  core_frame_encode(const uint8_t* payload, uint32_t len, uint8_t flags, uint8_t* out, uint32_t cap);
+```
+
+- **Who allocates and who frees.** `core_mark_create` allocates everything the stream will ever need, and
+  `core_mark_destroy` frees it; both are for a thread that may block, not the audio thread. The handle is the stream's
+  owner, opaque, and carries a magic number so a pointer that is not one of ours is refused instead of freed.
+- **`core_mark_process` is real-time safe**: no allocation (counted in the test, with a positive control for the
+  counter), no lock, no panic (`panic = "abort"` and errors return codes). `inputs` and `outputs` are arrays of one
+  pointer per channel, as hosts hand them over, and the two may be the same buffers.
+- **Position, not block index.** The carrier at a sample is a function of its stream position, which begins at `pos0`.
+  A host passes its timeline position, and a bounce, a second bounce and any block size render the same mark.
+- **Framing is the core's.** `core_frame_encode` is how a C++ host makes the frame the stream takes, so there is one
+  framing in the whole system and the plugin never writes a second.
+- The margin moves at the next frame, and the overlap of the frames' windows is the crossfade, so the level never steps.
+  A new identifier or key has to wait for a copy boundary and is not here yet: `docs/vst.md`, milestone 3.
+
+`wasm/tests/link_check.cpp` drives all of it as a plugin would: frames a payload through the core, makes a two-channel
+stream, pushes 40 seconds of audio through in blocks of seven different sizes, moves the margin, reads the result with
+`core_ss_detect`, and requires the frame that went in.

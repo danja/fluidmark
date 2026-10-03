@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <vector>
+#include <algorithm>
 
 extern "C" {
 uint32_t core_abi_version();
@@ -27,6 +30,16 @@ float* core_buffer_data(const float* ptr);
 int32_t core_buffer_set_len(float* ptr, uint32_t len);
 int32_t core_buffer_len(const float* ptr, uint32_t* out);
 int32_t core_goertzel_power(const float* ptr, float freq, float sample_rate, double* out);
+int32_t core_frame_encode(const uint8_t* payload, uint32_t len, uint8_t flags, uint8_t* out, uint32_t cap);
+uint32_t core_frame_bytes_for(uint32_t payload_bytes);
+uint32_t core_mark_latency();
+void* core_mark_create(const uint8_t* frame, uint32_t frame_len, uint32_t key_lo, uint32_t key_hi,
+                       double sample_rate, double margin_db, uint32_t channels, uint64_t pos0);
+int32_t core_mark_process(void* handle, const float* const* inputs, float* const* outputs, uint32_t frames);
+int32_t core_mark_set_margin(void* handle, double margin_db);
+int32_t core_mark_destroy(void* handle);
+int32_t core_ss_detect(const float* audio, double sample_rate, uint32_t key_lo, uint32_t key_hi, uint32_t channels,
+                       float* out, double* confidence, double* speed);
 }
 
 namespace {
@@ -86,6 +99,75 @@ int main() {
 
   expect(core_buffer_free(buffer) == 0, "core_buffer_free accepted the pointer it handed out");
   expect(core_scratch_free(scratch) == 0, "core_scratch_free accepted the pointer it handed out");
+
+  // The streaming embedder, the way a plugin drives it: frame the payload through the core, make a stream
+  // off the audio thread, push host-sized blocks through it, and read the result back with the core's own
+  // reader. Nothing here knows how a mark is made or found.
+  std::printf("  streaming embedder, as a plugin would drive it\n");
+  const char* text = "urn:x:link-check";
+  uint8_t frame[256];
+  const int32_t frame_len = core_frame_encode(reinterpret_cast<const uint8_t*>(text), std::strlen(text), 0, frame, sizeof frame);
+  expect(frame_len == static_cast<int32_t>(core_frame_bytes_for(std::strlen(text))), "core_frame_encode wrote the frame the core says it should");
+  expect(core_frame_encode(reinterpret_cast<const uint8_t*>(text), std::strlen(text), 0, frame, 4) < 0, "a frame that does not fit is refused");
+  expect(core_mark_create(frame, 3, 1, 0, 44100.0, -6.0, 2, 0) == nullptr, "a frame shorter than a header is refused");
+  expect(core_mark_create(frame, frame_len, 1, 0, 100.0, -6.0, 2, 0) == nullptr, "an absurd sample rate is refused");
+  expect(core_mark_create(frame, frame_len, 1, 0, 44100.0, -6.0, 0, 0) == nullptr, "zero channels is refused");
+
+  void* mark = core_mark_create(frame, frame_len, 2, 0, 44100.0, -6.0, 2, 0);
+  expect(mark != nullptr, "core_mark_create made a stream");
+  const uint32_t latency = core_mark_latency();
+  expect(latency == 3072, "the reported latency is the one in docs/vst.md's arithmetic");
+
+  const uint32_t seconds = 40;
+  const uint32_t total = seconds * 44100;
+  std::vector<float> left(total), right(total), out_left(total), out_right(total);
+  unsigned state = 12345;
+  for (uint32_t i = 0; i < total; i++) {
+    state = state * 1664525u + 1013904223u;
+    const float noise = (static_cast<float>(state >> 8) / 16777216.0f - 0.5f) * 0.04f;
+    const float t = static_cast<float>(i) / 44100.0f;
+    const float envelope = 0.5f + 0.5f * std::sin(2.0f * 3.14159265f * 0.5f * t);
+    left[i] = envelope * (0.25f * std::sin(2.0f * 3.14159265f * 220.0f * t) + 0.1f * std::sin(2.0f * 3.14159265f * 880.0f * t)) + noise;
+    right[i] = envelope * (0.25f * std::sin(2.0f * 3.14159265f * 247.0f * t) + 0.1f * std::sin(2.0f * 3.14159265f * 990.0f * t)) - noise;
+  }
+  // A host hands over blocks of whatever size it likes, and changes it between calls.
+  const uint32_t sizes[] = {64, 480, 1024, 333, 4096, 17, 2048};
+  uint32_t at = 0;
+  uint32_t which = 0;
+  bool all_ok = true;
+  while (at < total) {
+    const uint32_t n = std::min(sizes[which++ % 7], total - at);
+    const float* in[2] = {left.data() + at, right.data() + at};
+    float* outp[2] = {out_left.data() + at, out_right.data() + at};
+    all_ok = all_ok && core_mark_process(mark, in, outp, n) == 0;
+    at += n;
+  }
+  expect(all_ok, "core_mark_process accepted every block");
+  expect(core_mark_process(nullptr, nullptr, nullptr, 1) < 0, "a null handle is refused");
+  expect(core_mark_set_margin(mark, -9.0) == 0, "the margin can be moved");
+
+  // Output is delayed by the latency, so take the audio from there, and read it with the core's own reader.
+  const uint32_t usable = total - latency;
+  float* planar = core_buffer_new(usable * 2);
+  float* planar_data = core_buffer_data(planar);
+  std::memcpy(planar_data, out_left.data() + latency, usable * sizeof(float));
+  std::memcpy(planar_data + usable, out_right.data() + latency, usable * sizeof(float));
+  core_buffer_set_len(planar, usable * 2);
+  float* sink = core_buffer_new(70000);
+  double confidence = 0.0, speed = 0.0;
+  const int32_t found = core_ss_detect(planar, 44100.0, 2, 0, 2, sink, &confidence, &speed);
+  expect(found == 0, "the core's reader verifies the mark the stream wrote");
+  if (found == 0) {
+    const float* read_back = core_buffer_data(sink);
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(read_back);
+    expect(std::memcmp(bytes, frame, frame_len) == 0, "and it is the frame that went in");
+  }
+  std::printf("        confidence %.1f, speed %.6f\n", confidence, speed);
+  core_buffer_free(planar);
+  core_buffer_free(sink);
+
+  expect(core_mark_destroy(mark) == 0, "core_mark_destroy freed the stream");
+  expect(core_mark_destroy(nullptr) == 0, "destroying null is accepted");
 
   if (failures > 0) {
     std::printf("native link check: %d failure(s)\n", failures);
