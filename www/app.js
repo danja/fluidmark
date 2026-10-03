@@ -10,11 +10,11 @@
 // element that has gone is a null dereference at the moment a user presses a button, which is the
 // worst time to find out.
 
-import { loadCore } from '../src/load-browser.js';
-import { mark as markTones, read as readTones } from '../src/mark.js';
-import { decodeWav, encodeWav } from '../src/wav.js';
-import { embed, extract } from '../src/watermark.js';
-import { REASONS } from '../src/frame.js';
+import { loadCore } from './src/load-browser.js';
+import { mark as markTones, read as readTones } from './src/mark.js';
+import { decodeWav, encodeWav } from './src/wav.js';
+import { embed, extract } from './src/watermark.js';
+import { REASONS } from './src/frame.js';
 
 /** Where the payloads come from, in bits, for the inaudible scheme. */
 const WATERMARK_KEY = 0x0123_4567_89ab_cdefn;

@@ -11,7 +11,7 @@
 // markup. The things that need a browser, layout, focus and pointer, are in HUMANS.md, because
 // they genuinely cannot be checked without one.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -277,7 +277,7 @@ describe('the site is served under a path prefix', () => {
   it('loads its modules and its stylesheet relatively', () => {
     expect(html).toMatch(/href="style\.css"/);
     expect(html).toMatch(/src="app\.js"/);
-    expect(app).toMatch(/from '\.\.\/src\/load-browser\.js'/);
+    expect(app).toMatch(/from '\.\/src\/load-browser\.js'/);
   });
 
   it('states the canonical address, prefix included', () => {
@@ -300,5 +300,78 @@ describe('the site is served under a path prefix', () => {
       // The lowercase project name is fine in a repository path, not in a page title.
       expect(text, `${page} says "fluidmark" in its heading`).not.toMatch(/<h1>fluidmark/);
     }
+  });
+});
+
+describe('everything the page loads resolves inside the prefix', () => {
+  // The bug this exists for: app.js imported '../src/...', which from /fluidmark/app.js is
+  // /src/..., outside the prefix. The proxy sends that to a different app, the import fails, the
+  // whole script dies before it attaches a handler, and the page loads and does nothing. The
+  // "no leading slash" tests above cannot see it, because '../' is relative.
+  //
+  // So this resolves every import specifier and module-relative URL the way a browser would, from
+  // the URL the page is really served at, and requires each to land under /fluidmark/ and on a
+  // file the container serves: www/ at the document root, src/ at /src/, and the one Wasm file.
+
+  const ORIGIN = 'https://strandz.it';
+  const PREFIX = '/fluidmark';
+  const root = fileURLToPath(new URL('..', import.meta.url));
+
+  /** The file the container would serve for a path under the prefix, or null. */
+  function served(pathname) {
+    const rest = pathname.slice(PREFIX.length);
+    if (rest === '/build/fluidmark_core.wasm') return `${root}build/fluidmark_core.wasm`;
+    if (rest.startsWith('/src/')) return `${root}src/${rest.slice(5)}`;
+    return `${root}www${rest}`;
+  }
+
+  function specifiers(text) {
+    return [
+      ...[...text.matchAll(/\bfrom\s+'([^']+)'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/\bimport\s+'([^']+)'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/\bimport\(\s*'([^']+)'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/new URL\(\s*'([^']+)'\s*,\s*import\.meta\.url/g)].map((m) => m[1]),
+    ].filter((spec) => spec.startsWith('.'));
+  }
+
+  it('keeps every import and module URL under the prefix, on a file that exists', () => {
+    const seen = new Set();
+    const queue = [`${ORIGIN}${PREFIX}/app.js`];
+    const problems = [];
+    while (queue.length > 0) {
+      const url = queue.shift();
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const { pathname } = new URL(url);
+      const file = served(pathname);
+      if (!file.endsWith('.wasm') && !existsSync(file)) {
+        problems.push(`${pathname} is not a file the container serves`);
+        continue;
+      }
+      if (file.endsWith('.wasm')) continue;
+      for (const spec of specifiers(readFileSync(file, 'utf8'))) {
+        const next = new URL(spec, url);
+        if (!next.pathname.startsWith(`${PREFIX}/`)) {
+          problems.push(`${pathname} loads ${spec}, which is ${next.pathname}: outside ${PREFIX}/`);
+        } else {
+          queue.push(next.href);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+    // A walk that found nothing would pass on any input, so it has to have found the codec.
+    expect([...seen].some((u) => u.endsWith('/src/load-browser.js'))).toBe(true);
+    expect([...seen].some((u) => u.endsWith('/build/fluidmark_core.wasm'))).toBe(true);
+  });
+
+  it('would catch the bug it was written for', () => {
+    // The control: the same walk over the old specifier must report a problem.
+    const next = new URL('../src/load-browser.js', `${ORIGIN}${PREFIX}/app.js`);
+    expect(next.pathname.startsWith(`${PREFIX}/`)).toBe(false);
+  });
+
+  it('serves the page the same way the container lays it out', () => {
+    for (const dir of ['www', 'src']) expect(readdirSync(`${root}${dir}`).length).toBeGreaterThan(0);
+    expect(readFileSync(`${root}Dockerfile`, 'utf8')).toMatch(/COPY src \/srv\/src/);
   });
 });
