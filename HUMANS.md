@@ -28,7 +28,7 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
 
 ## 1. Checks that need a person
 
-- [ ] **Try the Mark plugin in REAPER.** `npm run build:vst`, then `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/` and
+- [ ] **Try the Mark plugin in REAPER.** `./install.sh` and
       rescan. Put **FluidMark** last in the master chain, type an identifier in the plugin window (click the field, type,
       Tab to the key field), play, and bounce. Then `node bin/mark.js --in bounce.wav --read` (with `--key` if you gave
       one) should print the identifier. Things to watch for and tell me: whether the window opens and the text fields

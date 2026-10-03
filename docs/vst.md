@@ -159,7 +159,7 @@ fluidmark_mark.vst3`; `npm run test:vst` runs the engine's tests under CTest.
 **Not done, and not checkable here:** a person loading it in REAPER, which is the first thing that is left; the model
 at 88.2 and 96 kHz; macOS and Windows; CI; and a pluginval run. The UI has been seen only in a virtual X server.
 
-Install, once you want to try it, is a copy: `cp -r build/vst/bin/fluidmark_mark.vst3 ~/.vst3/`, then a rescan.
+Install with `./install.sh` (builds, tests, copies the bundle to `~/.vst3`, replacing any old copy; `--no-test`, `--uninstall` and `VST3_DIR` are there), then rescan in the DAW.
 
 ## Milestones
 
