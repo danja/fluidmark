@@ -341,8 +341,11 @@ export function createCore(instance) {
    *
    * `frame` is a whole frame (see `src/frame.js`). `strengthDb` is the mark's level relative to
    * the host in the carrier's band. Nothing here says whether that level is audible.
+   *
+   * `audio` is planar when `channels` is more than one: all of channel 0, then all of channel 1.
+   * Every channel carries the same stream, which `docs/steganography.md` explains.
    */
-  function ssEmbed(audio, frame, key, sampleRate, strengthDb) {
+  function ssEmbed(audio, frame, key, sampleRate, strengthDb, channels = 1) {
     if (!(audio instanceof Float32Array)) {
       throw new TypeError('ssEmbed needs a Float32Array');
     }
@@ -355,7 +358,7 @@ export function createCore(instance) {
       fillSamples(audioBuffer, audio);
       fillBytes(frameBuffer, frame);
       check(
-        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb),
+        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels),
         'core_ss_embed',
       );
       return readBuffer(audioBuffer);
@@ -372,8 +375,10 @@ export function createCore(instance) {
    * checksum matched, `'damaged'` when a header was found and the checksum did not, and
    * `'none'` when nothing was. `frame` is the bytes as read, and is not to be believed unless
    * the status is `'verified'`. `confidence` is the sync peak in standard deviations.
+   *
+   * `audio` is planar for more than one channel, and what is read is the average of the channels.
    */
-  function ssDetect(audio, key, sampleRate) {
+  function ssDetect(audio, key, sampleRate, channels = 1) {
     if (!(audio instanceof Float32Array)) {
       throw new TypeError('ssDetect needs a Float32Array');
     }
@@ -382,7 +387,7 @@ export function createCore(instance) {
     try {
       fillSamples(audioBuffer, audio);
       const code = e.core_ss_detect(
-        audioBuffer.ptr, sampleRate, key.lo, key.hi, outBuffer.ptr, scratch,
+        audioBuffer.ptr, sampleRate, key.lo, key.hi, channels, outBuffer.ptr, scratch,
       );
       if (code < 0) check(code, 'core_ss_detect');
       const confidence = doubleOut(memory, scratch)[0];

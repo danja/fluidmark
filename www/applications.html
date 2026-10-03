@@ -52,24 +52,38 @@
         that is honest about its limits.
       </p>
       <p>
-        <strong>The inaudible scheme does not survive processing.</strong> Gain, resampling,
-        dithering, filtering and lossy transcoding all destroy it. Measured, not assumed: its bit
-        error rate after each of those is close to 50%. A file you mark with it will read back
-        correctly on the file you just wrote and will not read back at all after almost anything
-        else has touched it.
+        <strong>It has not been proven inaudible.</strong> The watermark is built to sit under the
+        music and has been measured as a signal, and nobody has confirmed by listening that you
+        cannot hear it on a given track. Play the marked file against the original, on a quiet
+        passage as well as a loud one, before you publish it.
       </p>
       <p>
-        <strong>The audible scheme survives less than you would like, and you can hear it.</strong>
-        It is not a watermark for a finished track.
+        <strong>It survives a lot, and not everything.</strong> On the music it was measured on, it
+        survived gain changes, dither, moderate noise, filtering, resampling, a crop, a fold to
+        mono and MP3 at 128 and 64 kbit/s. It does not survive heavy noise, and results differ
+        between tracks. It needs a track of at least 15 seconds or so, longer for a longer
+        identifier, and a mark in a short clip may not survive being cut.
       </p>
       <p>
         <strong>It is not a DRM and not an access control.</strong> Nothing here prevents anyone
-        from removing a mark who wants to. It identifies a source; it does not enforce anything.
+        from removing a mark who wants to. A key stops anyone finding it without the key. It does
+        not stop someone degrading the file until it no longer reads, and that has not been
+        measured. It identifies a source; it does not enforce anything.
       </p>
       <p>
-        <strong>Stereo files are not handled.</strong> The work is in one channel, and a stereo file
-        is refused rather than half-read, because a partial answer to "what does this file say"
-        would be worse than none.
+        <strong>A mark made with the default key can be read by anyone.</strong> That is the right
+        choice for an identifier meant to be looked up, and the wrong one for anything private.
+        Give a key for anything that should not be found by someone who does not have it.
+      </p>
+      <p>
+        <strong>The audible scheme survives less than you would like, and you can hear it.</strong>
+        It is the original WebBeeps scheme, kept so that old files still read. It is not a
+        watermark for a finished track, and it replaces the audio with beeps rather than marking
+        your music.
+      </p>
+      <p>
+        <strong>The marked file is a 16-bit WAV.</strong> A 24-bit master is written back 16-bit.
+        Other formats than WAV and MP3 are not read.
       </p>
     </main>
 

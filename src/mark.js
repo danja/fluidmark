@@ -9,6 +9,13 @@
 import { decodePayload, encodePayload } from './payload.js';
 
 /**
+ * The rate the tone codec works at, in Hz. Tones are written and read at this rate and no other:
+ * a file at another rate plays the tones at the wrong pitch and reads as no mark. Declared once
+ * here, and `tests/mark.test.js` holds it equal to `SAMPLE_RATE` in `wasm/src/tables.rs`.
+ */
+export const TONE_RATE = 22050;
+
+/**
  * A string to tones, ready to be mixed into or written as audio.
  *
  * @param core  from `createCore`

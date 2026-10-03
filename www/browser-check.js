@@ -13,8 +13,13 @@
 // `navigator.userActivation.hasBeenActive` before concluding anything from a hang: false means
 // the environment, not the code.
 
-import { writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { synthTrack } from '../src/synth.js';
+import { encodeWavChannels } from '../src/wav.js';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const BASE = (process.argv[2] || 'http://127.0.0.1:8080').replace(/\/+$/, '');
 /** A path under BASE, so the check works against a site served at a prefix such as /fluidmark. */
@@ -144,7 +149,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1500));
 
     check(
-      (await evaluate('document.title')).includes('fluidmark'),
+      (await evaluate('document.title')).includes('FluidMark'),
       'the page loads and has a title',
     );
     check(await evaluate('document.documentElement.lang === "en"'), 'the page states its language');
@@ -196,36 +201,153 @@ async function main() {
     check(roundTrip.ok, `a payload round trips in the browser ${roundTrip.reason || ''}`);
     check(roundTrip.text === 'browser check', `the text came back as ${JSON.stringify(roundTrip.text)}`);
 
-    // And the inaudible path, which is the one the site is actually for.
-    const steg = JSON.parse(
-      await evaluate(
-        `(async () => {
-          const { loadCore } = await import('${BASE}/src/load-browser.js');
-          const { embed, extract } = await import('${BASE}/src/watermark.js');
-          const { frame, unframe } = await import('${BASE}/src/frame.js');
-          const core = await loadCore();
-          const rate = 44100, n = rate;
-          const audio = new Float32Array(n);
-          for (let i = 0; i < n; i += 1) {
-            const t = i / rate;
-            audio[i] = 0.3 * Math.sin(2 * Math.PI * 220 * t) + 0.2 * Math.sin(2 * Math.PI * 330 * t);
-          }
-          const payload = new TextEncoder().encode('http://example.org/');
-          const marked = embed(core, audio, payload, { key: 1234n });
-          const read = extract(core, marked, { key: 1234n, payloadBytes: payload.length });
-          const clean = extract(core, audio, { key: 1234n, payloadBytes: payload.length });
-          core.destroy();
-          return JSON.stringify({
-            found: read.ok,
-            text: read.ok ? new TextDecoder().decode(read.payload) : null,
-            falsePositive: clean.ok,
-          });
-        })()`,
-      ),
-    );
-    check(steg.found, 'the inaudible scheme round trips in the browser');
-    check(steg.text === 'http://example.org/', `it came back as ${JSON.stringify(steg.text)}`);
-    check(!steg.falsePositive, 'unmarked audio is not reported as marked');
+    // The real thing: drive the page's own controls, with real files, the way a person does.
+    // Everything below goes through `index.html` and `app.js`, so a broken import, a renamed id, a
+    // handler that never attached or an error shown out of sight fails here and nowhere else.
+    await send('DOM.enable');
+    const root = (await send('DOM.getDocument')).result.root.nodeId;
+    const setFile = async (selector, path) => {
+      const node = (await send('DOM.querySelector', { nodeId: root, selector })).result.nodeId;
+      await send('DOM.setFileInputFiles', { nodeId: node, files: [path] });
+    };
+    /** Poll the page until `expression` is truthy, or say it never was. */
+    const until = async (expression, what, ms = 90000) => {
+      const start = Date.now();
+      while (Date.now() - start < ms) {
+        if (await evaluate(`Boolean(${expression})`)) {
+          check(true, what);
+          return true;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      check(false, `${what} (timed out after ${ms / 1000}s; status: ${JSON.stringify(await evaluate('document.getElementById("status").textContent'))})`);
+      return false;
+    };
+    const status = () => evaluate('document.getElementById("status").textContent');
+    const setValue = (id, value) => evaluate(`(() => { const el = document.getElementById(${JSON.stringify(id)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    const click = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+
+    mkdirSync('/tmp/fluidmark-check', { recursive: true });
+    // 14 s of stereo with different left and right, at 44.1 kHz. Long enough for one copy of a
+    // short identifier, short enough to be quick. Not music, but not a tone either.
+    const stereoWav = '/tmp/fluidmark-check/stereo.wav';
+    writeFileSync(stereoWav, encodeWavChannels([synthTrack(14, 44100, 31), synthTrack(14, 44100, 32)], 44100));
+    const shortWav = '/tmp/fluidmark-check/short.wav';
+    writeFileSync(shortWav, encodeWavChannels([synthTrack(3, 44100, 33), synthTrack(3, 44100, 34)], 44100));
+    const flac = '/tmp/fluidmark-check/not-supported.flac';
+    writeFileSync(flac, Buffer.from('fLaC' + 'x'.repeat(200)));
+    let stereoMp3 = null;
+    try {
+      stereoMp3 = '/tmp/fluidmark-check/stereo.mp3';
+      execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', stereoWav, '-b:a', '128k', stereoMp3]);
+    } catch {
+      stereoMp3 = null;
+    }
+
+    // 1. A failure is visible from where the button is. The short file cannot hold a mark.
+    await setValue('payload', 'urn:x:1');
+    await setFile('#source', shortWav);
+    await evaluate('document.getElementById("mark-button").scrollIntoView()');
+    await click('mark-button');
+    await until('/needs at least/.test(document.getElementById("status").textContent)', 'a too-short file is refused with a reason', 30000);
+    const inView = await evaluate(`(() => { const r = document.getElementById('status').getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight && r.height > 0; })()`);
+    check(inView, 'the failure message is on screen while the button is, not stranded at the top of the page');
+    check(!(await evaluate('document.getElementById("mark-button").disabled')), 'the button is usable again after a failure');
+
+    // 2. A format the page cannot read is refused by name.
+    await setFile('#source', flac);
+    await click('mark-button');
+    await until('/not a WAV or an MP3/.test(document.getElementById("status").textContent)', 'an unsupported file is refused by name', 30000);
+
+    // 3. Stereo in, stereo out, with a key; then read it back through the page's own Read control.
+    await setFile('#source', stereoWav);
+    await setValue('key', 'a check phrase');
+    await click('mark-button');
+    if (await until('!document.getElementById("mark-result").hidden', 'a stereo WAV is marked through the page')) {
+      const made = JSON.parse(await evaluate(`(async () => {
+        const link = document.getElementById('mark-download');
+        const bytes = new Uint8Array(await (await fetch(link.href)).arrayBuffer());
+        const view = new DataView(bytes.buffer);
+        return JSON.stringify({ channels: view.getUint16(22, true), rate: view.getUint32(24, true), bytes: bytes.length, name: link.download, detail: document.getElementById('mark-detail').textContent });
+      })()`));
+      check(made.channels === 2, `the marked file is stereo (${made.channels} channels)`);
+      check(made.rate === 44100, `and keeps its sample rate (${made.rate})`);
+      check(made.name === 'stereo-marked.wav', `and is named from the source (${made.name})`);
+      check(/2 channels/.test(made.detail) && /your key/.test(made.detail), `the detail says what was done: ${made.detail}`);
+
+      // Hand the blob that was just made to the Read control, as a person would hand it a file.
+      const feed = (key) => evaluate(`(async () => {
+        const blob = await (await fetch(document.getElementById('mark-download').href)).blob();
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], 'round-trip.wav', { type: 'audio/wav' }));
+        document.getElementById('marked').files = transfer.files;
+        document.getElementById('marked').dispatchEvent(new Event('change', { bubbles: true }));
+        const keyEl = document.getElementById('read-key');
+        keyEl.value = ${JSON.stringify(key)};
+        document.getElementById('read-result').hidden = true;
+        document.getElementById('read-button').click();
+      })()`);
+      await feed('a check phrase');
+      if (await until('!document.getElementById("read-result").hidden', 'the marked file is read back')) {
+        const found = JSON.parse(await evaluate(`JSON.stringify({ text: document.getElementById('read-payload').hidden ? null : document.getElementById('read-payload').textContent, detail: document.getElementById('read-detail').textContent })`));
+        check(found.text === 'urn:x:1', `the identifier came back through the page: ${JSON.stringify(found.text)}`);
+        check(/watermark reader/.test(found.detail), `and says how it was found: ${found.detail}`);
+      }
+      // The wrong key must say "no mark", in its own element, and never an identifier.
+      await feed('a different phrase');
+      if (await until('!document.getElementById("read-result").hidden && !document.getElementById("read-none").hidden', 'the wrong key reads as no mark')) {
+        check(await evaluate('document.getElementById("read-payload").hidden'), 'and shows no identifier');
+      }
+    }
+
+    // 4. Unmarked audio reads as no mark, through the page.
+    await setFile('#marked', stereoWav);
+    await setValue('read-key', 'a check phrase');
+    await evaluate('document.getElementById("read-result").hidden = true');
+    await click('read-button');
+    if (await until('!document.getElementById("read-result").hidden', 'an unmarked file is read')) {
+      check(await evaluate('!document.getElementById("read-none").hidden && document.getElementById("read-payload").hidden'), 'an unmarked file reports no mark and no identifier');
+    }
+
+    // 5. The files the old service made: MPEG-2, 22.05 kHz, mono, read by the tone reader.
+    await setFile('#marked', `${ROOT}reference/WebBeep/www/audio/dfgdfg.mp3`);
+    await setValue('read-key', '');
+    await evaluate('document.getElementById("read-result").hidden = true');
+    await click('read-button');
+    if (await until('!document.getElementById("read-result").hidden || /Could not read/.test(document.getElementById("status").textContent)', 'an old service MP3 is read', 60000)) {
+      const text = await evaluate('document.getElementById("read-payload").hidden ? null : document.getElementById("read-payload").textContent');
+      check(text === 'dfgdfg', `a legacy MP3 reads as 'dfgdfg' (${JSON.stringify(text)}; status ${JSON.stringify(await status())})`);
+    }
+
+    // 6. A stereo MPEG-1 MP3 is decoded by the browser and marked. Needs ffmpeg to make the file and
+    // WebCodecs in the browser; either missing is reported as skipped, not as a pass.
+    if (stereoMp3) {
+      const hasDecoder = await evaluate('typeof AudioDecoder !== "undefined"');
+      if (!hasDecoder) {
+        process.stdout.write('  skip  a stereo MP3 is decoded and marked (this browser has no AudioDecoder)\n');
+      } else {
+        await setFile('#source', stereoMp3);
+        await evaluate('document.getElementById("mark-result").hidden = true');
+        await click('mark-button');
+        if (await until('!document.getElementById("mark-result").hidden || /Could not mark/.test(document.getElementById("status").textContent)', 'a stereo MP3 is marked', 90000)) {
+          const detail = await evaluate('document.getElementById("mark-result").hidden ? document.getElementById("status").textContent : document.getElementById("mark-detail").textContent');
+          check(/2 channels/.test(detail) && /44100 Hz/.test(detail), `a stereo MP3 decodes to 2 channels at 44100 Hz and is marked: ${detail}`);
+        }
+      }
+    } else {
+      process.stdout.write('  skip  a stereo MP3 is decoded and marked (ffmpeg is not installed)\n');
+    }
+
+    // 7. The tone scheme needs no music file and says it is not using one.
+    await setValue('carrier', 'tones');
+    check(await evaluate('document.getElementById("source-field").hidden'), 'the tone scheme leaves out the music file chooser');
+    await setValue('payload', 'abc');
+    await evaluate('document.getElementById("mark-result").hidden = true');
+    await click('mark-button');
+    if (await until('!document.getElementById("mark-result").hidden', 'the tone scheme marks without a file')) {
+      const rate = await evaluate(`(async () => { const b = new Uint8Array(await (await fetch(document.getElementById('mark-download').href)).arrayBuffer()); return new DataView(b.buffer).getUint32(24, true); })()`);
+      check(rate === 22050, `the tones are written at 22050 Hz, which is the rate they are read at (${rate})`);
+    }
 
     // Layout, which is the measurement the DOM-only tests cannot make.
     const layout = JSON.parse(

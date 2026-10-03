@@ -72,10 +72,29 @@ const LAG_BLOCKS: usize = 512;
 const LAG_SIGMAS: f64 = 6.0;
 
 /// How far a sync peak has to stand above the rest of the scores, in robust standard deviations.
-const SYNC_SIGMAS: f64 = 5.0;
+///
+/// This is a filter on which peaks are worth trying, not the thing that decides a mark is there:
+/// the frame's magic, version and CRC-16 decide that. It has to be low, and the reason is not
+/// obvious. The spread of the scores is measured from the scores themselves, and every window of
+/// the stream contains data bits at full signal strength, so the spread grows with the mark: a
+/// perfect mark with no noise at all peaks at only `sqrt(SYNC_BITS)`, about 5.7, of that spread.
+/// A threshold of 5 sat almost on the ceiling, and whether a given key's sync word cleared it was
+/// a matter of how its sidelobes happened to fall. Roughly two keys in three failed to read their
+/// own marks, on a host where the default key was fine.
+const SYNC_SIGMAS: f64 = 2.5;
 
-/// Sync candidates the reader will try, strongest first.
-const MAX_CANDIDATES: usize = 8;
+/// Sync candidates the reader will try, strongest first. Each costs a Hamming decode of one
+/// header, which is nothing, and each is gated by the frame's checks before it is believed.
+const MAX_CANDIDATES: usize = 16;
+
+/// Most channels one call will take. Stereo is the case that matters; the rest is headroom for
+/// surround masters, which are marked channel by channel the same way.
+pub const MAX_CHANNELS: usize = 8;
+
+/// Most frames per channel the embedder will take. It makes several copies of a channel while it
+/// works, so the limit is about memory rather than time, and it is a refusal, not a truncation:
+/// marking the first twelve minutes of a longer file and returning it would be a quiet failure.
+pub const MAX_EMBED_FRAMES: usize = 1 << 25;
 
 /// The embedding level relative to the host's level in the band, in dB.
 pub const DEFAULT_STRENGTH_DB: f64 = -20.0;
@@ -91,6 +110,10 @@ pub enum SpreadError {
     TooShort,
     /// The sample rate is not usable.
     BadRate,
+    /// No channels, too many, or a sample count that is not a whole number of frames.
+    BadChannels,
+    /// More audio than the embedder will hold in memory at once. See `MAX_EMBED_FRAMES`.
+    TooLong,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,6 +542,75 @@ pub fn detect(samples: &[f32], sample_rate: f64, key: u64) -> Result<Detection, 
     Ok(Detection::none())
 }
 
+
+/// Check a planar buffer's shape and return the frames per channel.
+fn frames_of(total: usize, channels: usize) -> Result<usize, SpreadError> {
+    if channels == 0 || channels > MAX_CHANNELS || total % channels != 0 {
+        return Err(SpreadError::BadChannels);
+    }
+    Ok(total / channels)
+}
+
+/// `frames_of`, and a refusal of anything the embedder would not hold in memory.
+fn embed_frames(total: usize, channels: usize) -> Result<usize, SpreadError> {
+    let frames = frames_of(total, channels)?;
+    if frames > MAX_EMBED_FRAMES {
+        return Err(SpreadError::TooLong);
+    }
+    Ok(frames)
+}
+
+/// Mark audio of several channels, laid out planar: all of channel 0, then all of channel 1, and
+/// so on, `samples.len() / channels` frames each.
+///
+/// Every channel carries the **same** stream, on the same carrier, from sample zero, each at its
+/// own channel's level. That is the policy, and it is what makes the mark survive the changes
+/// stereo material usually goes through: a fold to mono adds the channels' carriers in phase, a
+/// single channel carries the whole mark by itself, and a channel that is silent stays silent.
+/// The cost is that it is not independent between channels, so nothing is gained from stereo
+/// except those survivals.
+pub fn embed_planar(
+    samples: &[f32],
+    channels: usize,
+    frame_bytes: &[u8],
+    key: u64,
+    sample_rate: f64,
+    strength_db: f64,
+) -> Result<Vec<f32>, SpreadError> {
+    let frames = embed_frames(samples.len(), channels)?;
+    let mut out = Vec::with_capacity(samples.len());
+    for channel in samples.chunks_exact(frames.max(1)) {
+        out.extend(embed(channel, frame_bytes, key, sample_rate, strength_db)?);
+    }
+    Ok(out)
+}
+
+/// Look for a mark in planar audio, by reading the average of its channels.
+///
+/// The average is what a fold to mono gives and what a single channel is half of, so it is the
+/// one signal in which every way the file might have been folded, split or left alone still has
+/// the mark. Only the first `MAX_ANALYSIS` frames are read.
+pub fn detect_planar(
+    samples: &[f32],
+    channels: usize,
+    sample_rate: f64,
+    key: u64,
+) -> Result<Detection, SpreadError> {
+    let frames = frames_of(samples.len(), channels)?;
+    if channels == 1 {
+        return detect(samples, sample_rate, key);
+    }
+    let used = frames.min(MAX_ANALYSIS);
+    let scale = 1.0 / channels as f32;
+    let mut mid = vec![0.0f32; used];
+    for channel in samples.chunks_exact(frames.max(1)) {
+        for (m, &x) in mid.iter_mut().zip(&channel[..used]) {
+            *m += x * scale;
+        }
+    }
+    detect(&mid, sample_rate, key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +714,52 @@ mod tests {
         assert_eq!(detect(&cropped, RATE, KEY).unwrap().status, Status::Verified, "crop");
     }
 
+
+    #[test]
+    fn every_key_reads_its_own_mark_not_only_the_lucky_ones() {
+        // The bug this guards: the sync threshold sat almost on the ceiling a perfect mark can
+        // reach, so whether a key cleared it depended on its sync word, and on a real recording
+        // about two keys in three failed to read their own marks. The default key happened to be
+        // one that passed, which is how the first measurements were all fine. One key is not a test
+        // of this, so it runs sixteen, on a host whose level moves as a recording's does. With the
+        // old threshold of 5.0 one of them fails here, and more on real audio.
+        let host = dynamic(seconds_needed() * 2.2, 9);
+        let mut failed = Vec::new();
+        for key in 1u64..=16 {
+            let out = embed(&host, &payload(), key, RATE, -26.0).unwrap();
+            if detect(&out, RATE, key).unwrap().status != Status::Verified {
+                failed.push(key);
+            }
+        }
+        assert!(failed.is_empty(), "keys that could not read their own mark: {failed:?}");
+    }
+
+    #[test]
+    fn the_sync_threshold_stays_well_below_the_ceiling_a_perfect_mark_reaches() {
+        // The reasoning is on the constant. A perfect mark peaks at about sqrt(SYNC_BITS) of the
+        // spread of the scores, so a threshold near that is a threshold some keys cannot clear.
+        let ceiling = (SYNC_BITS as f64).sqrt();
+        assert!(SYNC_SIGMAS <= 0.6 * ceiling, "{SYNC_SIGMAS} is too close to the ceiling {ceiling:.1}");
+    }
+
+    /// Music whose level moves around, as real recordings do: a new gain every few thousand
+    /// samples, log-uniform over 30 dB, so the soft values differ a lot in size from bit to bit.
+    fn dynamic(seconds: f64, seed: u64) -> Vec<f32> {
+        let host = music(seconds, RATE, seed);
+        let mut state = seed ^ 0xfeed;
+        let mut gain = 1.0f32;
+        host.iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                if i % 3001 == 0 {
+                    let u = (splitmix64(&mut state) >> 40) as f32 / (1u64 << 24) as f32;
+                    gain = 10f32.powf(-1.5 * u);
+                }
+                x * gain
+            })
+            .collect()
+    }
+
     #[test]
     fn a_gain_change_is_survived() {
         let (_, out) = marked(seconds_needed() * 2.2);
@@ -677,5 +815,105 @@ mod tests {
         assert_eq!(detect(&host, f64::NAN, KEY), Err(SpreadError::BadRate));
         assert_eq!(detect(&[], RATE, KEY).unwrap().status, Status::NoMark);
         assert_eq!(detect(&vec![0.0; 100_000], RATE, KEY).unwrap().status, Status::NoMark);
+    }
+
+    fn stereo(seconds: f64) -> (Vec<f32>, Vec<f32>) {
+        (music(seconds, RATE, 11), music(seconds, RATE, 12))
+    }
+
+    fn planar(left: &[f32], right: &[f32]) -> Vec<f32> {
+        left.iter().chain(right).copied().collect()
+    }
+
+    fn marked_stereo() -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let (l, r) = stereo(seconds_needed() * 2.2);
+        let out = embed_planar(&planar(&l, &r), 2, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        let n = l.len();
+        (out[..n].to_vec(), out[n..].to_vec(), planar(&l, &r))
+    }
+
+    #[test]
+    fn a_stereo_track_is_marked_and_read_back() {
+        let (l, r, _) = marked_stereo();
+        let found = detect_planar(&planar(&l, &r), 2, RATE, KEY).unwrap();
+        assert_eq!(found.status, Status::Verified, "{found:?}");
+        assert_eq!(found.frame, payload());
+    }
+
+    #[test]
+    fn each_channel_alone_carries_the_whole_mark() {
+        let (l, r, _) = marked_stereo();
+        assert_eq!(detect(&l, RATE, KEY).unwrap().status, Status::Verified, "left");
+        assert_eq!(detect(&r, RATE, KEY).unwrap().status, Status::Verified, "right");
+    }
+
+    #[test]
+    fn a_fold_to_mono_keeps_the_mark() {
+        // The attack the brief names. The carriers add in phase, so the fold is read as easily as
+        // either channel, where independent marks per channel could have partly cancelled.
+        let (l, r, _) = marked_stereo();
+        let mono = attack::stereo_to_mono(&l, &r);
+        assert_eq!(detect(&mono, RATE, KEY).unwrap().status, Status::Verified);
+    }
+
+    #[test]
+    fn a_silent_channel_stays_silent_and_the_other_still_reads() {
+        let (l, _) = stereo(seconds_needed() * 2.2);
+        let silent = vec![0.0f32; l.len()];
+        let out = embed_planar(&planar(&l, &silent), 2, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        let (ml, mr) = out.split_at(l.len());
+        assert!(mr.iter().all(|&x| x == 0.0), "the silent channel was marked");
+        assert_ne!(ml, &l[..]);
+        assert_eq!(detect_planar(&out, 2, RATE, KEY).unwrap().status, Status::Verified);
+    }
+
+    #[test]
+    fn an_inverted_channel_does_not_cancel_the_mark() {
+        // A host whose channels are in antiphase folds to silence, which would take a mark that
+        // lived in the host's own mid with it. This one is in each channel's own level, so it does
+        // not.
+        let (l, _) = stereo(seconds_needed() * 2.2);
+        let inverted: Vec<f32> = l.iter().map(|&x| -x).collect();
+        let out = embed_planar(&planar(&l, &inverted), 2, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        assert_eq!(detect_planar(&out, 2, RATE, KEY).unwrap().status, Status::Verified);
+    }
+
+    #[test]
+    fn unmarked_stereo_is_never_reported_as_marked() {
+        for seed in 1..=3 {
+            let l = music(seconds_needed() * 1.5, RATE, seed);
+            let r = music(seconds_needed() * 1.5, RATE, seed + 50);
+            let found = detect_planar(&planar(&l, &r), 2, RATE, KEY).unwrap();
+            assert_eq!(found.status, Status::NoMark, "seed {seed}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn one_channel_through_the_planar_path_matches_the_mono_path() {
+        let host = music(seconds_needed() * 1.2, RATE, 4);
+        let a = embed(&host, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        let b = embed_planar(&host, 1, &payload(), KEY, RATE, DEFAULT_STRENGTH_DB).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_bad_channel_layout_is_refused() {
+        let host = music(5.0, RATE, 1);
+        let p = payload();
+        assert_eq!(embed_planar(&host, 0, &p, KEY, RATE, -20.0), Err(SpreadError::BadChannels));
+        assert_eq!(embed_planar(&host, MAX_CHANNELS + 1, &p, KEY, RATE, -20.0), Err(SpreadError::BadChannels));
+        // A count that is not a whole number of frames is a buffer that was not planar.
+        assert_eq!(embed_planar(&host[..1001], 2, &p, KEY, RATE, -20.0), Err(SpreadError::BadChannels));
+        assert_eq!(detect_planar(&host[..1001], 2, RATE, KEY), Err(SpreadError::BadChannels));
+        assert_eq!(detect_planar(&host, 0, RATE, KEY), Err(SpreadError::BadChannels));
+    }
+
+    #[test]
+    fn audio_beyond_the_memory_bound_is_refused_not_truncated() {
+        // Tested on the lengths alone, so this does not allocate what it refuses.
+        assert_eq!(embed_frames(MAX_EMBED_FRAMES, 1), Ok(MAX_EMBED_FRAMES));
+        assert_eq!(embed_frames(MAX_EMBED_FRAMES + 1, 1), Err(SpreadError::TooLong));
+        assert_eq!(embed_frames(2 * MAX_EMBED_FRAMES, 2), Ok(MAX_EMBED_FRAMES));
+        assert_eq!(embed_frames(2 * MAX_EMBED_FRAMES + 2, 2), Err(SpreadError::TooLong));
     }
 }

@@ -178,3 +178,14 @@ describe('WAV', () => {
     expect(result.text).toBe('through a file');
   });
 });
+
+describe('the tone rate', () => {
+  it('is the one the Rust tone table uses', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { TONE_RATE } = await import('../src/mark.js');
+    const rust = readFileSync(new URL('../wasm/src/tables.rs', import.meta.url), 'utf8');
+    const declared = rust.match(/pub const SAMPLE_RATE: u32 = ([\d_]+);/);
+    expect(declared, 'tables.rs no longer declares SAMPLE_RATE this way').not.toBeNull();
+    expect(Number(declared[1].replace(/_/g, ''))).toBe(TONE_RATE);
+  });
+});

@@ -126,3 +126,158 @@ export function decodeWav(bytes) {
   }
   return { samples: pcm16ToSamples(pcm), sampleRate, channels, bitsPerSample };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Several channels.
+//
+// `decodeWav` and `encodeWav` above are the mono 16-bit pair the tone codec uses, and they keep
+// refusing anything else, because the tone codec is mono and a stereo file that was quietly
+// folded to mono would be a different file. The pair below is for the watermark path, where real
+// music is stereo, often 24-bit, and written by tools that put it behind WAVE_FORMAT_EXTENSIBLE.
+// Channels stay separate here: folding is the caller's decision, never this module's.
+
+const FORMAT_PCM = 1;
+const FORMAT_FLOAT = 3;
+const FORMAT_EXTENSIBLE = 0xfffe;
+
+/** Most channels accepted, matching the core's limit. */
+export const MAX_CHANNELS = 8;
+
+/**
+ * A WAV file as one `Float32Array` per channel, or throws.
+ *
+ * Reads 8, 16, 24 and 32-bit integer PCM and 32-bit float, with `WAVE_FORMAT_EXTENSIBLE`, from one
+ * to eight channels. Anything else is refused by name rather than half-read.
+ *
+ * @returns {{channelData: Float32Array[], sampleRate: number, channels: number,
+ *            bitsPerSample: number, frames: number}}
+ */
+export function decodeWavChannels(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.byteLength < 12) {
+    throw new Error(`too short to be a WAV file: ${view.byteLength} bytes`);
+  }
+  if (view.getUint32(0, true) !== RIFF) throw new Error('not a RIFF file');
+  if (view.getUint32(8, true) !== WAVE) throw new Error('RIFF file but not WAVE');
+
+  let format = 0;
+  let channels = 0;
+  let sampleRate = 0;
+  let bitsPerSample = 0;
+  let data = null;
+
+  let at = 12;
+  while (at + 8 <= view.byteLength) {
+    const id = view.getUint32(at, true);
+    const size = view.getUint32(at + 4, true);
+    const body = at + 8;
+    if (id === FMT && body + 16 <= view.byteLength) {
+      format = view.getUint16(body, true);
+      channels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bitsPerSample = view.getUint16(body + 14, true);
+      if (format === FORMAT_EXTENSIBLE) {
+        if (size < 40 || body + 26 > view.byteLength) {
+          throw new Error('WAVE_FORMAT_EXTENSIBLE with a short fmt chunk');
+        }
+        // The real format is the first two bytes of the sub-format GUID.
+        format = view.getUint16(body + 24, true);
+      }
+    } else if (id === DATA) {
+      // A declared size past the end of the file is clamped, as in `decodeWav`.
+      data = { start: body, length: Math.min(size, view.byteLength - body) };
+    }
+    at = body + size + (size % 2);
+  }
+
+  if (!data) throw new Error('no data chunk');
+  if (format !== FORMAT_PCM && format !== FORMAT_FLOAT) {
+    throw new Error(`only uncompressed PCM and float WAV are supported, format ${format}`);
+  }
+  if (!Number.isInteger(channels) || channels < 1 || channels > MAX_CHANNELS) {
+    throw new Error(`${channels} channels: this reads 1 to ${MAX_CHANNELS}`);
+  }
+  if (!(sampleRate > 0)) throw new Error(`sample rate ${sampleRate}`);
+  const supported =
+    format === FORMAT_FLOAT ? [32] : [8, 16, 24, 32];
+  if (!supported.includes(bitsPerSample)) {
+    throw new Error(`${bitsPerSample}-bit ${format === FORMAT_FLOAT ? 'float' : 'PCM'} is not supported`);
+  }
+
+  const width = bitsPerSample / 8;
+  const frames = Math.floor(data.length / (width * channels));
+  const channelData = Array.from({ length: channels }, () => new Float32Array(frames));
+  const read =
+    format === FORMAT_FLOAT
+      ? (o) => view.getFloat32(o, true)
+      : bitsPerSample === 16
+        ? (o) => view.getInt16(o, true) / 32768
+        : bitsPerSample === 24
+          ? (o) => {
+              // Sign-extended by shifting through the top of a 32-bit integer.
+              const v = (view.getUint8(o) | (view.getUint8(o + 1) << 8) | (view.getUint8(o + 2) << 16)) << 8 >> 8;
+              return v / 8388608;
+            }
+          : bitsPerSample === 32
+            ? (o) => view.getInt32(o, true) / 2147483648
+            : (o) => (view.getUint8(o) - 128) / 128;
+  let o = data.start;
+  for (let i = 0; i < frames; i += 1) {
+    for (let c = 0; c < channels; c += 1) {
+      channelData[c][i] = read(o);
+      o += width;
+    }
+  }
+  return { channelData, sampleRate, channels, bitsPerSample, frames };
+}
+
+/**
+ * Channels as a 16-bit PCM WAV, interleaved, clipping rather than wrapping.
+ *
+ * Always 16-bit, whatever the source was. A 24-bit master comes back 16-bit, which loses its
+ * bottom eight bits and is the one thing here a person might not expect; the page says so.
+ */
+export function encodeWavChannels(channelData, sampleRate) {
+  const channels = channelData.length;
+  if (channels < 1 || channels > MAX_CHANNELS) {
+    throw new Error(`${channels} channels: this writes 1 to ${MAX_CHANNELS}`);
+  }
+  const frames = channelData[0].length;
+  if (channelData.some((c) => c.length !== frames)) {
+    throw new Error('the channels are not the same length');
+  }
+  const dataBytes = frames * channels * 2;
+  if (dataBytes > 0xffffffff - 36) throw new Error('too large for a WAV file');
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  let at = 0;
+  const u32 = (value) => {
+    view.setUint32(at, value, true);
+    at += 4;
+  };
+  const u16 = (value) => {
+    view.setUint16(at, value, true);
+    at += 2;
+  };
+  u32(RIFF);
+  u32(36 + dataBytes);
+  u32(WAVE);
+  u32(FMT);
+  u32(16);
+  u16(FORMAT_PCM);
+  u16(channels);
+  u32(sampleRate);
+  u32(sampleRate * channels * 2);
+  u16(channels * 2);
+  u16(16);
+  u32(DATA);
+  u32(dataBytes);
+  for (let i = 0; i < frames; i += 1) {
+    for (let c = 0; c < channels; c += 1) {
+      const clamped = Math.max(-1, Math.min(1, channelData[c][i]));
+      view.setInt16(at, Math.round(clamped * 32767), true);
+      at += 2;
+    }
+  }
+  return new Uint8Array(buffer);
+}

@@ -172,3 +172,20 @@ forget because nothing in the container can see it.
    hash of the body for `/`, `/jigdaw/`, `/diddums/` and `/api/update-feeds` (a GET is enough to see a status; do not
    trigger a feed update to test it), and compare after. The change adds one location and should alter none of them. A
    mismatch means the new location is matching something it should not.
+
+
+## What the page does now
+
+- **Marks with the watermark by default**, in the page, in Wasm. Mono or stereo WAV, or MP3 decoded by the browser
+  (MPEG-1, 2 and 2.5, any channel count it supports), with the channels kept and the file's own sample rate. Written
+  as a 16-bit WAV. An optional key phrase decides where the mark hides; the same phrase is needed to read it.
+- **Reads** looks for the watermark and then for the original tones, and reports one of three outcomes in three
+  elements: an identifier, no mark, or something damaged. A wrong key reads as "no mark", which is also what a file with
+  no mark says, and the page says so.
+- **The tone scheme** needs no music file, writes mono at 22050 Hz (the rate it is read at), and replaces the audio.
+- **Refusals say why**, in the status line, which stays at the top of the viewport so an error is on screen while the
+  button is: a track too short for the identifier (with the length it needs), a format that is not WAV or MP3, a track
+  longer than the core will mark in one call.
+- **No cancel button.** It could not interrupt a Wasm call, so it was removed rather than left doing nothing.
+- `www/browser-check.js` drives all of this in headless Chrome with real files, including a stereo MP3 through
+  WebCodecs and one of the old service's MP3s. `npm run docker:check` runs it.

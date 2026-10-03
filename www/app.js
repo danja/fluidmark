@@ -11,13 +11,10 @@
 // worst time to find out.
 
 import { loadCore } from './src/load-browser.js';
-import { mark as markTones, read as readTones } from './src/mark.js';
-import { decodeWav, encodeWav } from './src/wav.js';
-import { embed, extract } from './src/watermark.js';
-import { REASONS } from './src/frame.js';
-
-/** Where the payloads come from, in bits, for the inaudible scheme. */
-const WATERMARK_KEY = 0x0123_4567_89ab_cdefn;
+import { readAudioFile } from './src/audio-browser.js';
+import { mark as markTones, read as readTones, TONE_RATE } from './src/mark.js';
+import { encodeWav, encodeWavChannels } from './src/wav.js';
+import * as spread from './src/spread.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,21 +23,24 @@ const els = {
   payload: $('payload'),
   payloadCount: $('payload-count'),
   carrier: $('carrier'),
+  key: $('key'),
+  keyField: $('key-field'),
+  sourceField: $('source-field'),
   source: $('source'),
   sourceInfo: $('source-info'),
   markButton: $('mark-button'),
-  cancelMark: $('cancel-mark'),
   markResult: $('mark-result'),
   markDownload: $('mark-download'),
   markDetail: $('mark-detail'),
+  readKey: $('read-key'),
   marked: $('marked'),
   markedInfo: $('marked-info'),
   readButton: $('read-button'),
-  cancelRead: $('cancel-read'),
   readResult: $('read-result'),
   readPayload: $('read-payload'),
   readNone: $('read-none'),
   readDamaged: $('read-damaged'),
+  readDetail: $('read-detail'),
 };
 
 let core = null;
@@ -88,162 +88,48 @@ function updateCount() {
 els.payload.addEventListener('input', updateCount);
 updateCount();
 
-/**
- * Read a file into samples.
- *
- * WAV is decoded here. MP3 is decoded by the browser's own decoder through WebCodecs, which needs
- * the frames split out first, so `mp3ToSamples` walks them. Anything else is refused with a
- * message rather than guessed at.
- */
-async function readAudio(file) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const name = file.name.toLowerCase();
-
-  if (name.endsWith('.wav') || bytes[0] === 0x52 || bytes[1] === 0x49) {
-    return { wav: decodeWav(bytes) };
-  }
-  if (name.endsWith('.mp3') || bytes[0] === 0xff) {
-    const samples = await mp3ToSamples(bytes);
-    return { wav: { samples, sampleRate: 22050, channels: 1, bitsPerSample: 16 } };
-  }
-  throw new Error(
-    `${file.name}: this page reads WAV and MP3 only. FLAC, OGG and M4A would need a decoder this page does not have.`,
-  );
-}
-
-/** Split an MP3 into frames and hand them to the browser's decoder. */
-async function mp3ToSamples(bytes) {
-  if (typeof AudioDecoder === 'undefined') {
-    throw new Error(
-      'this browser cannot decode MP3, and there is no fallback here. A WAV file will work.',
-    );
-  }
-  const frames = splitMp3Frames(bytes);
-  if (frames.length === 0) {
-    throw new Error('no MP3 frames found: the file may not be MP3.');
-  }
-  const header = readMp3Header(bytes, frames[0].start);
-  const chunks = [];
-  let total = 0;
-
-  const decoder = new AudioDecoder({
-    output: (buffer) => {
-      // Mono is what the codec works in, so downmix here rather than in two places.
-      const left = buffer.getChannelData(0);
-      const mono =
-        buffer.numberOfChannels === 1
-          ? left
-          : Float32Array.from(
-              left,
-              (v, i) => (v + buffer.getChannelData(1)[i]) * 0.5,
-            );
-      chunks.push(mono);
-      total += mono.length;
-    },
-    error: (error) => {
-      throw error;
-    },
-  });
-
-  decoder.configure({
-    codec: 'mp3',
-    sampleRate: header.sampleRate,
-    numberOfChannels: 1,
-  });
-
-  for (const frame of frames) {
-    decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: frame.start, data: bytes.subarray(frame.start, frame.end) }));
-  }
-  await decoder.flush();
-  decoder.close();
-
-  const out = new Float32Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.length;
-  }
-  return out;
-}
-
-/** Bitrates and sample rates, from the MPEG tables, indexed by the header's index fields. */
-const MP3_BITRATES = [
-  [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0],
-  [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
-  [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
-];
-const MP3_RATES = [44100, 48000, 32000, 0];
-
-/** The MPEG-1 Layer III header at `start`, or null if there is not one. */
-function readMp3Header(bytes, start) {
-  const b0 = bytes[start];
-  const b1 = bytes[start + 1];
-  const b2 = bytes[start + 2];
-  if (b0 !== 0xff || (b1 & 0xe0) !== 0xe0) return null;
-  const versionBits = (b1 >> 3) & 0x03; // 3 is MPEG-1
-  const layerBits = (b1 >> 1) & 0x03; // 1 is Layer III
-  if (layerBits !== 1 || versionBits !== 3) return null;
-  const bitrateIndex = (b2 >> 4) & 0x0f;
-  const rateIndex = (b2 >> 2) & 0x03;
-  const bitrate = MP3_BITRATES[0][bitrateIndex] * 1000;
-  const sampleRate = MP3_RATES[rateIndex];
-  if (!bitrate || !sampleRate) return null;
-  // A 1152-sample frame: 144 * bitrate / sampleRate, plus the header.
-  const samples = (144 * bitrate) / sampleRate;
-  return {
-    bitrate,
-    sampleRate,
-    samplesPerFrame: Math.floor(samples),
-    padding: (b2 >> 1) & 0x01,
-    frameBytes: Math.floor((samples / 8) * (bitrate / sampleRate)) + 4,
-    samples,
-  };
-}
-
-/**
- * Every frame's byte range.
- *
- * Walking frames rather than handing the whole file to the decoder, because `EncodedAudioChunk`
- * is one frame at a time and an ID3 tag at the front of the file is not audio.
- */
-function splitMp3Frames(bytes) {
-  const frames = [];
-  let at = 0;
-  // Skip an ID3 tag if present: "ID3", two size bytes, ten bytes of flags and padding.
-  if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
-    const size = ((bytes[6] & 0x7f) << 21) | ((bytes[7] & 0x7f) << 14) | ((bytes[8] & 0x7f) << 7) | (bytes[9] & 0x7f);
-    at = 10 + size;
-  }
-  while (at + 4 < bytes.length) {
-    const header = readMp3Header(bytes, at);
-    if (!header) {
-      at += 1; // not aligned yet
-      continue;
-    }
-    const length = Math.floor((header.samples / 8) * (header.bitrate / header.sampleRate)) + 4 + header.padding;
-    const end = Math.min(at + length, bytes.length);
-    frames.push({ start: at, end });
-    at = end;
-    if (frames.length > 200000) break; // a runaway walk is worse than a truncated file
-  }
-  return frames;
-}
-
 /** A short busy period, so a long operation yields to the browser between steps. */
 const breathe = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function setBusy(button, cancel, busy, busyText) {
+function setBusy(button, busy, busyText) {
   button.setAttribute('aria-busy', busy ? 'true' : 'false');
   button.disabled = busy;
   button.textContent = busy ? busyText : button.dataset.label || button.textContent;
-  cancel.hidden = !busy;
 }
 
 els.markButton.dataset.label = 'Mark this file';
 els.readButton.dataset.label = 'Read the mark';
 
+/** Minutes and seconds, for a length a person will compare against their track. */
+function clock(seconds) {
+  const whole = Math.round(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** The tone scheme does not use a music file, so the chooser is left out rather than ignored. */
+function syncScheme() {
+  const tones = els.carrier.value === 'tones';
+  els.sourceField.hidden = tones;
+  els.keyField.hidden = tones;
+}
+els.carrier.addEventListener('change', syncScheme);
+syncScheme();
+
+/** Channels averaged into one, for the tone reader, which is mono by definition. */
+function fold(channelData) {
+  if (channelData.length === 1) return channelData[0];
+  const out = new Float32Array(channelData[0].length);
+  for (const channel of channelData) {
+    for (let i = 0; i < out.length; i += 1) out[i] += channel[i] / channelData.length;
+  }
+  return out;
+}
+
 els.markButton.addEventListener('click', async () => {
   const payload = els.payload.value.trim();
+  const tones = els.carrier.value === 'tones';
   const file = els.source.files && els.source.files[0];
   els.markResult.hidden = true;
 
@@ -252,44 +138,80 @@ els.markButton.addEventListener('click', async () => {
     els.payload.focus();
     return;
   }
-  if (!file) {
+  if (!tones && !file) {
     setStatus('Choose a music file first.');
     els.source.focus();
     return;
   }
 
-  setBusy(els.markButton, els.cancelMark, true, 'Marking…');
+  setBusy(els.markButton, true, 'Marking…');
   try {
     const codec = await getCore();
-    setStatus(`Reading ${file.name}…`);
-    const { wav } = await readAudio(file);
-    await breathe();
-
-    let samples;
+    let wavBytes;
+    let name;
     let detail;
-    if (els.carrier.value === 'steg') {
-      const bytes = new TextEncoder().encode(payload);
-      samples = embed(codec, wav.samples, bytes, { key: WATERMARK_KEY });
-      detail = `${wav.sampleRate} Hz, ${samples.length} samples. Inaudible, one bit per sample.`;
-    } else {
-      samples = markTones(codec, payload);
-      detail = `${wav.sampleRate} Hz, ${samples.length} samples. Audible tones, the original scheme.`;
-    }
-    await breathe();
 
-    const out = encodeWav(samples, wav.sampleRate);
-    const url = URL.createObjectURL(new Blob([out], { type: 'audio/wav' }));
-    els.markDownload.href = url;
-    els.markDownload.download = `${file.name.replace(/\.[^.]+$/, '')}-marked.wav`;
+    if (tones) {
+      const samples = markTones(codec, payload);
+      wavBytes = encodeWav(samples, TONE_RATE);
+      name = 'marked-tones.wav';
+      detail = `${TONE_RATE} Hz mono, ${clock(samples.length / TONE_RATE)}. Audible tones, the original scheme. This is a new file of beeps, not your music.`;
+    } else {
+      setStatus(`Reading ${file.name}…`);
+      const audio = await readAudioFile(file);
+      await breathe();
+
+      const bytes = new TextEncoder().encode(payload);
+      const needed = spread.minSamples(codec, bytes.length, audio.sampleRate);
+      if (audio.frames < needed) {
+        throw new Error(
+          `this track is ${clock(audio.frames / audio.sampleRate)} long and a mark with an identifier this long ` +
+            `needs at least ${clock(needed / audio.sampleRate)}. A shorter identifier needs less.`,
+        );
+      }
+
+      setStatus(`Marking ${plural(audio.channels, 'channel')}…`);
+      await breathe();
+      const key = spread.keyFromText(els.key.value);
+      const marked = spread.embed(codec, audio.channelData, bytes, { key, sampleRate: audio.sampleRate });
+      await breathe();
+
+      wavBytes = encodeWavChannels(marked, audio.sampleRate);
+      name = `${file.name.replace(/\.[^.]+$/, '')}-marked.wav`;
+      const copies = Math.floor(audio.frames / needed);
+      detail =
+        `${audio.sampleRate} Hz, ${plural(audio.channels, 'channel')}, ${clock(audio.frames / audio.sampleRate)}. ` +
+        `${plural(copies, 'copy')} of the mark${copies > 1 ? ', which is what lets it survive damage' : ''}. ` +
+        `${els.key.value.trim() ? 'Made with your key.' : 'Made with the public default key, so anyone can read it.'} ` +
+        `Written as a 16-bit WAV${audio.bitsPerSample && audio.bitsPerSample !== 16 ? ` (the original was ${audio.bitsPerSample}-bit)` : ''}.`;
+    }
+
+    if (els.markDownload.href.startsWith('blob:')) URL.revokeObjectURL(els.markDownload.href);
+    els.markDownload.href = URL.createObjectURL(new Blob([wavBytes], { type: 'audio/wav' }));
+    els.markDownload.download = name;
     els.markDetail.textContent = detail;
     els.markResult.hidden = false;
-    setStatus(`Marked. The file is ready to download.`);
+    setStatus('Marked. The file is ready to download below.');
+    els.markResult.scrollIntoView({ block: 'nearest' });
   } catch (error) {
     setStatus(`Could not mark that file: ${error.message}`);
   } finally {
-    setBusy(els.markButton, els.cancelMark, false);
+    setBusy(els.markButton, false);
   }
 });
+
+function showResult({ text, none, damaged, detail }) {
+  els.readPayload.hidden = text === undefined;
+  els.readNone.hidden = !none;
+  els.readDamaged.hidden = !damaged;
+  if (text !== undefined) els.readPayload.textContent = text;
+  if (none) els.readNone.textContent = none;
+  if (damaged) els.readDamaged.textContent = damaged;
+  els.readDetail.hidden = !detail;
+  if (detail) els.readDetail.textContent = detail;
+  els.readResult.hidden = false;
+  els.readResult.scrollIntoView({ block: 'nearest' });
+}
 
 els.readButton.addEventListener('click', async () => {
   const file = els.marked.files && els.marked.files[0];
@@ -301,65 +223,68 @@ els.readButton.addEventListener('click', async () => {
     return;
   }
 
-  setBusy(els.readButton, els.cancelRead, true, 'Reading…');
+  setBusy(els.readButton, true, 'Reading…');
   try {
     const codec = await getCore();
     setStatus(`Reading ${file.name}…`);
-    const { wav } = await readAudio(file);
+    const audio = await readAudioFile(file);
     await breathe();
-
-    let result;
-    if (els.carrier.value === 'steg') {
-      // The payload length is not known in advance for this scheme, which is a real limitation
-      // of it and not something to paper over: it has no sync word. So the lengths worth trying
-      // are tried, and a match is reported as a match.
-      result = { ok: false, reason: REASONS.NO_MARK };
-      for (let payloadBytes = 8; payloadBytes <= 120 && !result.ok; payloadBytes += 1) {
-        result = extract(codec, wav.samples, { key: WATERMARK_KEY, payloadBytes });
-      }
-    } else {
-      result = readTones(codec, wav.samples);
-    }
-    await breathe();
+    const shape = `${audio.sampleRate} Hz, ${plural(audio.channels, 'channel')}, ${clock(audio.frames / audio.sampleRate)}`;
 
     // Three outcomes, three elements. Collapsing them into one box is how "no mark" turns into
-    // "an empty identifier" and users conclude the tool is broken.
-    if (result.ok) {
-      els.readPayload.textContent = result.text;
-      els.readPayload.hidden = false;
-      els.readNone.hidden = true;
-      els.readDamaged.hidden = true;
-      setStatus(`Found an identifier: ${result.text}`);
-    } else if (result.reason === REASONS.NO_MARK || result.reason === 'no-mark') {
-      els.readPayload.hidden = true;
-      els.readDamaged.hidden = true;
-      els.readNone.textContent = 'No mark found in this file. That is a definite answer, not a failure.';
-      els.readNone.hidden = false;
-      setStatus('No mark found in this file.');
-    } else {
-      els.readPayload.hidden = true;
-      els.readNone.hidden = true;
-      els.readDamaged.textContent =
-        'Something was found but it does not check out, so it is not reported as an identifier. ' +
-        'The file may have been processed or truncated.';
-      els.readDamaged.hidden = false;
-      setStatus('Found something damaged, not an identifier.');
+    // "an empty identifier" and users conclude the tool is broken. The watermark is looked for
+    // first, then the tones, and a damaged find from either is kept in case the other finds nothing.
+    let damaged = false;
+
+    const key = spread.keyFromText(els.readKey.value);
+    const w = spread.detect(codec, audio.channelData, { key, sampleRate: audio.sampleRate });
+    await breathe();
+    if (w.ok) {
+      const text = new TextDecoder().decode(w.payload);
+      showResult({ text, detail: `Found by the watermark reader. ${shape}. The checksum matched.` });
+      setStatus(`Found an identifier: ${text}`);
+      return;
     }
-    els.readResult.hidden = false;
+    damaged = w.reason === 'damaged';
+
+    // The tone reader works at one rate only, so a file at another rate is not read by it, and
+    // the page says so instead of reporting a mark that is merely out of range.
+    let tonesSkipped = false;
+    if (audio.sampleRate === TONE_RATE) {
+      const t = readTones(codec, fold(audio.channelData));
+      if (t.ok) {
+        showResult({ text: t.text, detail: `Found by the tone reader. ${shape}. The checksum matched.` });
+        setStatus(`Found an identifier: ${t.text}`);
+        return;
+      }
+      damaged = damaged || (t.reason !== 'no-mark');
+    } else {
+      tonesSkipped = true;
+    }
+
+    if (damaged) {
+      showResult({
+        damaged:
+          'Something was found but it does not check out, so it is not reported as an identifier. ' +
+          'The file may have been processed or truncated.',
+        detail: shape,
+      });
+      setStatus('Found something damaged, not an identifier.');
+    } else {
+      showResult({
+        none:
+          'No mark found in this file. That is a definite answer, not a failure. If the mark was made with a key, ' +
+          'this is also what a wrong or missing key looks like.',
+        detail: `${shape}.${tonesSkipped ? ` The tone reader only reads ${TONE_RATE} Hz files, so it was not tried.` : ''}`,
+      });
+      setStatus('No mark found in this file.');
+    }
   } catch (error) {
     setStatus(`Could not read that file: ${error.message}`);
   } finally {
-    setBusy(els.readButton, els.cancelRead, false);
+    setBusy(els.readButton, false);
   }
 });
-
-// A cancel that reloads is worse than one that stops the work, but WebAssembly has no way to
-// interrupt a call already in progress, so the honest thing is to say what it does.
-for (const cancel of [els.cancelMark, els.cancelRead]) {
-  cancel.addEventListener('click', () => {
-    setStatus('Finishing the current step, then stopping. A long operation cannot be interrupted mid-decode.');
-  });
-}
 
 // Report a load failure rather than leaving two buttons that do nothing with no explanation.
 window.addEventListener('error', (event) => {

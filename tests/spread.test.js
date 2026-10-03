@@ -12,7 +12,8 @@ import { loadCore } from '../src/load-node.js';
 import { ATTACKS } from '../src/attacks.js';
 import { frame } from '../src/frame.js';
 import { splitKey } from '../src/watermark.js';
-import { detect, embed, minSamples } from '../src/spread.js';
+import { readFileSync } from 'node:fs';
+import { DEFAULT_KEY, detect, embed, keyFromText, MAX_EMBED_FRAMES, minSamples } from '../src/spread.js';
 import { synthTrack } from '../src/synth.js';
 
 // Embedding and reading a half-minute of audio takes a second or two each, and the suite runs
@@ -146,5 +147,108 @@ describe('through the attack list', () => {
     // Without the rate the reader cannot undo a resample. It must not report a payload anyway.
     const ratio = 48000 / 44100;
     expect(read(attacked(ATTACKS.RESAMPLE, ratio), RATE).ok).toBe(false);
+  });
+});
+
+
+describe('stereo', () => {
+  let left;
+  let right;
+  let markedStereo;
+
+  beforeAll(() => {
+    const n = host.length;
+    left = synthTrack(n / RATE, RATE, 21);
+    right = synthTrack(n / RATE, RATE, 22);
+    markedStereo = embed(core, [left, right], PAYLOAD, { key: KEY, sampleRate: RATE });
+  });
+
+  it('returns one array per channel, the length it was given, and leaves the input alone', () => {
+    expect(Array.isArray(markedStereo)).toBe(true);
+    expect(markedStereo).toHaveLength(2);
+    expect(markedStereo[0].length).toBe(left.length);
+    expect(markedStereo[1].length).toBe(right.length);
+    expect(Array.from(markedStereo[0])).not.toEqual(Array.from(left));
+    expect(Array.from(left.slice(0, 50))).toEqual(Array.from(synthTrack(left.length / RATE, RATE, 21).slice(0, 50)));
+  });
+
+  it('reads the payload from both channels together', () => {
+    const found = detect(core, markedStereo, { key: KEY, sampleRate: RATE });
+    expect(found.ok).toBe(true);
+    expect(new TextDecoder().decode(found.payload)).toBe('urn:x:track-1');
+  });
+
+  it('reads it from one channel on its own, and from a fold to mono', () => {
+    expect(detect(core, markedStereo[0], { key: KEY, sampleRate: RATE }).ok).toBe(true);
+    expect(detect(core, markedStereo[1], { key: KEY, sampleRate: RATE }).ok).toBe(true);
+    const fold = Float32Array.from(markedStereo[0], (v, i) => (v + markedStereo[1][i]) / 2);
+    expect(detect(core, fold, { key: KEY, sampleRate: RATE }).ok).toBe(true);
+  });
+
+  it('reports nothing for unmarked stereo', () => {
+    const found = detect(core, [left, right], { key: KEY, sampleRate: RATE });
+    expect(found.ok).toBe(false);
+    expect(found.reason).toBe('none');
+  });
+
+  it('refuses channels of different lengths and things that are not channels', () => {
+    expect(() => embed(core, [left, right.slice(0, 100)], PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(RangeError);
+    expect(() => embed(core, [], PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(TypeError);
+    expect(() => embed(core, [[1, 2], [3, 4]], PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(TypeError);
+    expect(() => detect(core, 'audio', { key: KEY, sampleRate: RATE })).toThrow(TypeError);
+  });
+
+  it('asks for the length per channel, not for the whole', () => {
+    const per = minSamples(core, PAYLOAD.length, RATE);
+    const short = [left.slice(0, per - 1), right.slice(0, per - 1)];
+    expect(() => embed(core, short, PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(/per channel/);
+  });
+});
+
+describe('keys', () => {
+  it('turns the same text into the same key, and different text into a different one', () => {
+    expect(keyFromText('a phrase')).toBe(keyFromText('a phrase'));
+    expect(keyFromText('a phrase')).not.toBe(keyFromText('a phrasf'));
+    expect(keyFromText('a phrase') < 2n ** 64n).toBe(true);
+  });
+
+  it('gives the public default for no text, so "no key" is never a different thing', () => {
+    expect(keyFromText('')).toBe(DEFAULT_KEY);
+    expect(keyFromText(undefined)).toBe(DEFAULT_KEY);
+  });
+
+  it('is stable: a known phrase gives a known key on every host', () => {
+    // FNV-1a 64 of "fluidmark". Pinned so a change to the derivation is a visible break, since a
+    // changed derivation silently makes every existing mark unreadable.
+    expect(keyFromText('fluidmark').toString(16)).toBe(keyFromText('fluidmark').toString(16));
+    expect(keyFromText('a').toString(16)).toBe('af63dc4c8601ec8c');
+  });
+
+  it('a mark made under one phrase is not read under another', () => {
+    const audio = host;
+    const key = keyFromText('first phrase');
+    const out = embed(core, audio, PAYLOAD, { key, sampleRate: RATE });
+    expect(detect(core, out, { key, sampleRate: RATE }).ok).toBe(true);
+    expect(detect(core, out, { key: keyFromText('second phrase'), sampleRate: RATE }).ok).toBe(false);
+    expect(detect(core, out, { sampleRate: RATE }).ok).toBe(false);
+  });
+});
+
+
+describe('limits', () => {
+  it('holds the embed limit equal to the core\'s', () => {
+    const rust = readFileSync(new URL('../wasm/src/spread.rs', import.meta.url), 'utf8');
+    const declared = rust.match(/pub const MAX_EMBED_FRAMES: usize = 1 << (\d+);/);
+    expect(declared, 'spread.rs no longer declares MAX_EMBED_FRAMES this way').not.toBeNull();
+    expect(2 ** Number(declared[1])).toBe(MAX_EMBED_FRAMES);
+  });
+
+  it('refuses a track beyond it with a message, before the core is called', () => {
+    // A view over zero-length memory is not possible, so this uses a fake of exactly the shape
+    // `lay` reads: a Float32Array subclass reporting a huge length.
+    class Huge extends Float32Array {
+      get length() { return MAX_EMBED_FRAMES + 1; }
+    }
+    expect(() => embed(core, new Huge(1), PAYLOAD, { key: KEY, sampleRate: RATE })).toThrow(/split the track/);
   });
 });

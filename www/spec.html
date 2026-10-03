@@ -45,26 +45,46 @@
         because it is the baseline the other scheme is measured against.
       </p>
 
-      <h2>The inaudible scheme</h2>
+      <h2>The watermark scheme</h2>
       <p>
-        The watermark scheme replaces the tones with a mark hidden in the samples themselves. The
-        payload is written into the low bit of a keyed selection of 16-bit samples, one bit per
-        sample, at positions chosen by a pseudorandom sequence from a secret key.
+        The watermark hides the identifier in the music as a faint noise-like signal, spread
+        across the spectrum between 250 Hz and 8 kHz. Each bit of the message is a burst of
+        keyed noise, 2048 samples long, added to the track at a level that follows the music's own
+        level in that band, so it is quieter when the music is.
       </p>
       <p>
-        Because the positions are keyed rather than sequential, the payload does not sit in a
-        visible run of the file, and a reader needs the key to find it.
+        The noise is generated from a key. Without the key there is nothing to correlate against,
+        so the mark cannot be found, and with it the reader recovers each bit by correlating the
+        track against that noise, which averages away the music itself. The message is
+        error-corrected with a Hamming code, shuffled so that damage to one stretch of the file
+        does not land on one stretch of the message, and repeated end to end for as long as the
+        track lasts. The reader finds where a copy starts from a keyed marker, with no help,
+        so a cropped or shifted file reads, then combines every copy it can find before deciding.
       </p>
       <p>
-        <strong>It is inaudible but not robust.</strong> Any processing that moves a sample moves
-        its low bit. Gain, resampling, dithering, filtering and lossy transcoding all destroy it:
-        the measured bit error rate after every one of them is close to 50%, which is to say
-        random. This is the expected result for a scheme of this family and it is why the scheme is
-        still being worked on.
+        Stereo files stay stereo. Every channel carries the same message, which is what lets a fold
+        to mono, or either channel on its own, still read.
       </p>
       <p>
-        The current state is measured, not claimed.
-        <code>npm run docker:check</code> runs the whole attack suite and prints a table.
+        <strong>What has been measured.</strong> On a minute of a real stereo recording, with the
+        mark 20 dB below the music in its band, the message read back exactly after gain changes,
+        dither, moderate white noise, low-pass and high-pass filtering, resampling to 48 kHz and to
+        22.05 kHz, a time shift, a crop, a fold to mono, one channel alone, and MP3 compression at
+        128 and 64 kbit/s. It was lost to heavy noise, pink noise at 20 dB below the loudest
+        sample. On other music the results differ a little, and the table is in the project
+        documentation. A track too short to hold one copy is refused: about 15 seconds for a few
+        characters of identifier and up to about 50 for the longest.
+      </p>
+      <p>
+        <strong>What has not.</strong> Nobody has yet confirmed by listening that the mark is
+        inaudible on any particular track. The level is a measurement of signal, and a signal
+        difference is not the same thing as a difference you can hear. Play the marked file against
+        the original before you rely on it. And nothing has been measured against someone who is
+        trying to remove the mark: the key stops anyone reading it, and does not by itself stop a
+        determined person degrading it.
+      </p>
+      <p>
+        The marked file is written as a 16-bit WAV. A 24-bit master loses its bottom eight bits.
       </p>
 
       <h2>How a reader tells "no mark" from "a mark"</h2>
@@ -73,8 +93,9 @@
         unmarked file must be able to say so, rather than reporting whatever it managed to read.
       </p>
       <p>
-        Every payload is wrapped in a frame that begins with the four bytes
-        <code>FLMK</code>, then a version, flags, a length, and a CRC-16 of the payload. A reader
+        Every watermark payload is wrapped in a frame that begins with the four bytes
+        <code>FLMK</code>, then a version, flags, a length, and a CRC-16 of the payload. (The
+        audible scheme keeps its original single checksum byte, so that old files still read.) A reader
         that does not find the magic has found nothing and says nothing was found. A reader that
         finds the magic but whose checksum does not match says the file holds something damaged.
         Those are different answers, and the page reports them differently, because "no mark here"
@@ -100,10 +121,9 @@
         sees your music. The page makes no request to anywhere else at all.
       </p>
       <p>
-        The one thing that does not work yet: the inaudible scheme has no way for a reader to find
-        where the mark starts, so it is told how long the payload is. The page works around that by
-        trying the lengths that are plausible. A scheme with a synchronisation word would not need
-        to, and building one is the next piece of work.
+        If you give a key, it is used in your browser to generate the noise and is never sent
+        anywhere. The key is a phrase and is not stored. Without one the mark uses a default key
+        that is published in the source, so anyone can find and read a mark made that way.
       </p>
     </main>
 

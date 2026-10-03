@@ -21,8 +21,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { loadCore } from '../src/load-node.js';
 import { ATTACK_LIST, ATTACKS, REMOVAL_LIST } from '../src/attacks.js';
 import { bitErrors, frame, unframe } from '../src/frame.js';
-import { decodeWav, encodeWav } from '../src/wav.js';
-import { DEFAULT_STRENGTH_DB } from '../src/spread.js';
+import { decodeWavChannels, encodeWavChannels } from '../src/wav.js';
+import * as spread from '../src/spread.js';
+import { DEFAULT_STRENGTH_DB, detectRaw } from '../src/spread.js';
 import { splitKey } from '../src/watermark.js';
 
 const DEFAULT_KEY = 0x0123_4567_89ab_cdefn;
@@ -52,24 +53,33 @@ function hasBinary(name) {
   }
 }
 
-/** A lossy round trip through ffmpeg, or null when ffmpeg is not installed. */
-function lossyRoundTrip(wavBytes, sampleRate, bitrate) {
+/** A lossy round trip through ffmpeg that keeps the channel count, or null without ffmpeg. */
+function lossyRoundTrip(wavBytes, sampleRate, channels, bitrate) {
   try {
     const mp3 = execFileSync(
       'ffmpeg',
       ['-loglevel', 'error', '-f', 'wav', '-i', 'pipe:0', '-b:a', bitrate, '-f', 'mp3', 'pipe:1'],
-      { input: wavBytes, maxBuffer: 128 * 1024 * 1024 },
+      { input: wavBytes, maxBuffer: 512 * 1024 * 1024 },
     );
     const back = execFileSync(
       'ffmpeg',
-      ['-loglevel', 'error', '-i', 'pipe:0', '-ar', String(sampleRate), '-ac', '1',
+      ['-loglevel', 'error', '-i', 'pipe:0', '-ar', String(sampleRate), '-ac', String(channels),
        '-sample_fmt', 's16', '-f', 'wav', 'pipe:1'],
-      { input: mp3, maxBuffer: 128 * 1024 * 1024 },
+      { input: mp3, maxBuffer: 512 * 1024 * 1024 },
     );
-    return decodeWav(new Uint8Array(back)).samples;
+    return decodeWavChannels(new Uint8Array(back)).channelData;
   } catch {
     return null;
   }
+}
+
+/** Channels averaged into one. */
+function fold(channelData) {
+  const out = new Float32Array(channelData[0].length);
+  for (const channel of channelData) {
+    for (let i = 0; i < out.length; i += 1) out[i] += channel[i] / channelData.length;
+  }
+  return out;
 }
 
 export async function main(argv) {
@@ -88,7 +98,13 @@ export async function main(argv) {
   }
   const strengthDb = args.strength === undefined ? DEFAULT_STRENGTH_DB : Number(args.strength);
 
-  const wav = decodeWav(new Uint8Array(await readFile(args.in)));
+  const wav = decodeWavChannels(new Uint8Array(await readFile(args.in)));
+  const audio = wav.channelData;
+  const channels = wav.channels;
+  if (scheme === 'lsb' && channels > 1) {
+    process.stderr.write('the LSB baseline is mono: give it a mono file, or use --scheme spread\n');
+    return 2;
+  }
   const payload = new TextEncoder().encode(String(args.payload));
   const framed = frame(payload);
   const bits = framed.length * 8;
@@ -100,26 +116,32 @@ export async function main(argv) {
     // long enough to hold a copy. Say so before embedding rather than from deep inside it.
     if (scheme === 'spread') {
       const needed = core.ssMinSamples(framed.length, wav.sampleRate);
-      if (wav.samples.length < needed) {
+      if (wav.frames < needed) {
         process.stderr.write(
-          `the track is ${wav.samples.length} samples and one copy of the mark needs ${needed} ` +
+          `the track is ${wav.frames} samples per channel and one copy of the mark needs ${needed} ` +
             `(${(needed / wav.sampleRate).toFixed(1)} s at ${wav.sampleRate} Hz)\n`,
         );
         return 2;
       }
     }
+    // Always an array of channels, so every row below treats mono and stereo the same way.
     const marked = scheme === 'spread'
-      ? core.ssEmbed(wav.samples, framed, { lo, hi }, wav.sampleRate, strengthDb)
-      : core.embedLsb(wav.samples, framed, { lo, hi });
+      ? spread.embed(core, audio, payload, { key, sampleRate: wav.sampleRate, strengthDb })
+      : [core.embedLsb(audio[0], framed, { lo, hi })];
 
     if (args.out) {
-      await writeFile(args.out, encodeWav(marked, wav.sampleRate));
+      await writeFile(args.out, encodeWavChannels(marked, wav.sampleRate));
     }
+
+    /** One attack over every channel. Noise gets a different seed per channel: the same noise in
+     *  both would add coherently in a fold to mono, which is not what independent noise does. */
+    const attackAll = (id, param, seed, input = marked) =>
+      input.map((channel, i) => core.attack(id, param, wav.sampleRate, channel, seed + i));
 
     const rows = [];
     const add = (name, samples, note = '', rate = wav.sampleRate) => {
       if (scheme === 'spread') {
-        const found = core.ssDetect(samples, { lo, hi }, rate);
+        const found = detectRaw(core, samples, { key, sampleRate: rate });
         const seen = found.status !== 'none';
         // No sync found means there is nothing to compare, and reporting 100% (nothing read) or
         // 50% (a guess) would both be inventing a figure. It is reported as not found.
@@ -136,7 +158,7 @@ export async function main(argv) {
         });
         return;
       }
-      const raw = core.extractLsb(samples, framed.length, { lo, hi });
+      const raw = core.extractLsb(samples[0], framed.length, { lo, hi });
       const errors = bitErrors(framed, raw);
       const decoded = unframe(raw);
       rows.push({
@@ -155,8 +177,8 @@ export async function main(argv) {
     // with only the first would pass a detector that reports a mark in everything.
     add('none (control)', marked);
     const unmarked = scheme === 'spread'
-      ? core.ssDetect(wav.samples, { lo, hi }, wav.sampleRate).status === 'verified'
-      : unframe(core.extractLsb(wav.samples, framed.length, { lo, hi })).ok;
+      ? detectRaw(core, audio, { key, sampleRate: wav.sampleRate }).status === 'verified'
+      : unframe(core.extractLsb(audio[0], framed.length, { lo, hi })).ok;
     rows.push({
       attack: 'unmarked track (control)',
       unmarked: true,
@@ -167,7 +189,14 @@ export async function main(argv) {
     for (const row of ATTACK_LIST) {
       // A resample changes the rate of what comes out, and the reader is told the rate it has.
       const rate = row.id === ATTACKS.RESAMPLE ? wav.sampleRate * row.param : wav.sampleRate;
-      add(row.name, core.attack(row.id, row.param, wav.sampleRate, marked, row.seed ?? 0), row.note ?? '', rate);
+      add(row.name, attackAll(row.id, row.param, row.seed ?? 0), row.note ?? '', rate);
+    }
+
+    // What stereo material goes through that mono material does not: a fold to mono, and one channel
+    // being all that is kept. The mark is the same stream in every channel, so both should read.
+    if (channels > 1 && scheme === 'spread') {
+      add('stereo to mono (fold)', [fold(marked)], 'the brief names it');
+      add('one channel only', [marked[0]], 'left channel kept');
     }
 
     // Removal, after the degradation rows and labelled as its own thing, because "how do I get
@@ -178,16 +207,16 @@ export async function main(argv) {
     // is its own piece of work (TODO.md), and a row that always reads "survived" would be a figure
     // that was not measuring what it appears to.
     for (const row of scheme === 'lsb' ? REMOVAL_LIST : []) {
-      add(row.name, core.attack(row.id, row.param, wav.sampleRate, marked, row.seed ?? 0), 'needs no key');
+      add(row.name, attackAll(row.id, row.param, row.seed ?? 0), 'needs no key');
     }
 
     // The lossy rows need an external binary, so they are reported separately whether or not it
     // is there, per AGENTS.md on environment-dependent tests.
     const haveFfmpeg = hasBinary('ffmpeg');
     if (haveFfmpeg) {
-      const markedWav = encodeWav(marked, wav.sampleRate);
+      const markedWav = encodeWavChannels(marked, wav.sampleRate);
       for (const bitrate of ['128k', '64k']) {
-        const samples = lossyRoundTrip(markedWav, wav.sampleRate, bitrate);
+        const samples = lossyRoundTrip(markedWav, wav.sampleRate, channels, bitrate);
         if (samples) add(`mp3 ${bitrate}`, samples, 'needs ffmpeg');
         else rows.push({ attack: `mp3 ${bitrate}`, skipped: true, note: 'ffmpeg failed' });
       }
@@ -202,9 +231,9 @@ export async function main(argv) {
     const falsePositive = rows.some((r) => r.falsePositive);
 
     if (args.json) {
-      process.stdout.write(`${JSON.stringify({ key: key.toString(), payloadBytes: payload.length, rows }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ key: key.toString(), channels, sampleRate: wav.sampleRate, payloadBytes: payload.length, rows }, null, 2)}\n`);
     } else {
-      printTable(rows, framed.length, bits, wav.sampleRate, scheme, strengthDb);
+      printTable(rows, framed.length, bits, wav.sampleRate, channels, scheme, strengthDb);
       process.stdout.write(
         `\n${survived.length}/${ran.length} attacks left the payload readable` +
           ` (control included)\n`,
@@ -217,11 +246,11 @@ export async function main(argv) {
   }
 }
 
-function printTable(rows, frameBytes, bits, sampleRate, scheme, strengthDb) {
+function printTable(rows, frameBytes, bits, sampleRate, channels, scheme, strengthDb) {
   const width = Math.max(...rows.map((r) => r.attack.length), 22);
   process.stdout.write(
     `${scheme === 'spread' ? `Spread spectrum at ${strengthDb} dB` : 'LSB baseline'}: ` +
-      `${frameBytes} byte frame, ${bits} bits, ${sampleRate} Hz mono\n\n`,
+      `${frameBytes} byte frame, ${bits} bits, ${sampleRate} Hz ${channels === 1 ? 'mono' : `${channels} channels`}\n\n`,
   );
   process.stdout.write(`${'attack'.padEnd(width)}   BER    recovered  note\n`);
   process.stdout.write(`${'-'.repeat(width)}  ------  ---------  ----\n`);

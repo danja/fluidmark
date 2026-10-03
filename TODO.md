@@ -119,11 +119,11 @@ measured baseline.
       remaining thing it cannot find is the sample rate, which is told.
 - [x] **Forward error correction and interleaving**, at the level of Hamming(7,4) and a keyed permutation,
       with repeats soft-combined. A stronger code is its own item below.
-- [ ] **Widen the margin.** The mark reads at -20 dB and not at -26 dB, and the loss is a cliff. Whether
-      -20 dB is inaudible is unmeasured and may be too loud. Options in order of cost: more chips per bit,
-      a stronger code than Hamming (convolutional with Viterbi, or LDPC), weighting bands by how clean the
-      host is there, and a longer-lived frame that fits more copies. Each is measured through the harness
-      on real audio, at a fixed strength, against the 17-18 of 20 above.
+- [ ] **Widen the margin further.** After the sync fix the mark reads down to about -32 dB on a quiet
+      recording and nothing reads at -38 dB. Whether any of those levels is inaudible is unmeasured. Options
+      in order of cost: a stronger code than Hamming (convolutional with Viterbi, or LDPC), since near the edge
+      rows come back damaged at 1-3% bit errors, more chips per bit, and weighting bands by how clean the host is
+      there. Each is measured through the harness on real audio, at a fixed strength.
 - [ ] **A removal attack for the spread scheme.** The scrub rows are LSB-only now. Keyless: notch the band,
       whiten and subtract, a re-synthesis through a codec at a low rate, and collusion between two
       differently-marked copies. Each is a row in the table with its own figure.
@@ -131,15 +131,22 @@ measured baseline.
       not in the tree (Sonic Pi's samples are on this machine, and a personal recording is not
       redistributable). Tests run on `src/synth.js`, which is too easy. Find a few seconds each of dense,
       quiet, and bright material with a licence that permits redistribution, and run the suite on them.
-- [ ] **A tool that embeds and reads the spread mark in a file**, as `bin/mark.js` does for the tones.
-      `bin/attack.js --out` writes a marked WAV today, and nothing reads one back outside the harness.
+- [x] **A tool that embeds and reads the spread mark in a file.** `bin/mark.js`, default scheme spread, stereo.
+- [ ] **MP3 in the Node tools.** The page decodes MP3 with WebCodecs, and the tools read WAV only. Shelling out to
+      ffmpeg is what the harness does; a tool that does it for `mark.js` is small.
+- [ ] **Output at the input's bit depth.** A 24-bit master is written back 16-bit. The page and the tool say so,
+      and a mastering chain would not want it. Needs 24-bit and float writing, and a decision about dither.
+- [ ] **Lower peak memory.** A six-minute stereo file needs about 1.2 GB to mark, mostly copies of the channels.
+      Embedding in chunks with overlap would cut it, and the page would then hold longer tracks on a phone.
+- [ ] **Test the page on a phone-sized memory budget**, with a long stereo file. Untested; a person on a phone.
 - [ ] **Speed.** About 0.6 s to embed and 1.7 s to read a minute in Wasm. Reading is dominated by the
       whitening filter and the per-block FFTs; neither has been profiled.
 - [ ] **The psychoacoustic layer**, so the mark sits under a masking threshold rather than at a
       fixed level. Needs the audibility criterion from the decisions list first.
 - [ ] **The native applications**: embed and extract, over the same core the browser and the tools
       use.
-- [ ] **Stereo.** Everything so far is mono, and real music is not.
+- [x] **Stereo**, in the core, the WAV reader and writer, the harness, the tool and the page. Every channel carries
+      the same stream and a read uses the average. `docs/steganography.md`.
 
 ## Delivery 3: the VST plugin, later
 
@@ -195,10 +202,9 @@ itself.
       policy first.
 - [ ] **A browser check in a real browser**, which is a person: layout at 360px, focus order, the pointer, and a screen
       reader pass. All in `HUMANS.md`, none of it checkable from a DOM without a renderer.
-- [ ] **Progress and cancel that actually work.** The page has the region and the buttons; a cancel that cannot interrupt
-      a Wasm call is not a cancel. Decide whether to decode in a worker so it can be interrupted, or drop the buttons.
-- [ ] **Stereo.** The page and the core both work in mono, and a stereo file is refused rather than half-read.
-- [ ] **The remaining pages**: `spec.html` and `applications.html` are linked from `index.html` and do not exist yet.
+- [ ] **Progress and cancel.** The cancel buttons were removed: a cancel that cannot interrupt a Wasm call is not one,
+      and a control that does nothing is worse than none. Bring them back when the work runs in a worker, which is
+      also what would let a long file show progress and keep the page responsive.
 
 ## Reading
 

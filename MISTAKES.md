@@ -7,6 +7,35 @@ Newest first within a theme. Some entries are lessons carried over from sibling 
 reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
 what would notice it happening.
 
+## One key measured the key, not the scheme
+
+**What happened.** Every spread-spectrum measurement used one key, the public default. Marking a stereo file with a
+typed phrase then failed to read, and on a real recording 9 keys in 14 could not read their own mark. The sync
+threshold (5 standard deviations) sat almost on the ceiling a perfect mark can reach (sqrt(32), about 5.7), so a key
+passed or failed on how its sync word's sidelobes happened to fall. The default key passed. The "thin 3 dB margin" I had
+written up, and the cliff in the strength sweep, were mostly this.
+
+**Root cause.** A threshold was picked by feel, and a single key was the whole population of the test. The spread it was
+measured against includes the data bits, so it grows with the mark and the ratio cannot rise past a fixed ceiling.
+
+**Prevention.** A scheme parameterised by a key is tested over many keys, not one. The test runs sixteen on a host whose
+level moves, and a second one asserts the threshold sits well below the ceiling; both go red with the old value. A
+threshold has a derivation next to it, and a measured margin is re-measured after any fix to the thing it measured.
+
+## An MP3 parser written from memory read none of the files the page exists for
+
+**What happened.** The page's MP3 path was never run in a real browser until stereo made it matter. It had four
+separate faults: it rejected MPEG-2 (the 22.05 kHz mono files the old service wrote, which are the whole reason the page
+reads MP3), used the Layer I bitrate table for Layer III, hard-coded the sample rate to 22050 and the channel count to
+1, and called `AudioBuffer.getChannelData` on an `AudioData`, which has no such method.
+
+**Root cause.** The code was written against how MP3 works in general and never against a file. No test could reach
+`AudioDecoder`, so nothing failed.
+
+**Prevention.** The parsing moved to `src/mp3.js`, which is pure and is tested against the real files the old service
+made and against ffmpeg's. The decode is checked by `www/browser-check.js` in headless Chrome, with a stereo MP3 and a
+legacy MP3 through the page's own controls. Code that needs a browser is not done until it has run in one.
+
 ## A relative URL can still escape the prefix it is served under
 
 **What happened.** On the live page at `strandz.it/fluidmark/`, choosing a file did nothing and the input stayed on

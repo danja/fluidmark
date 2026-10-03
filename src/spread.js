@@ -5,15 +5,74 @@
 //
 // Separate from `watermark.js`, which is the LSB control, and from `mark.js`, the audible tones.
 // Three schemes in one repository, and a figure has to say which produced it.
+//
+// Audio is one `Float32Array` per channel, or a single `Float32Array` for mono. The policy for
+// several channels lives in the core, not here: every channel carries the same stream, and a read
+// uses the average of the channels. This file only lays the channels out the way the core wants.
 
 import { frame, unframe } from './frame.js';
 import { splitKey } from './watermark.js';
+
+/**
+ * The most frames per channel the core will mark in one call, matching `MAX_EMBED_FRAMES` in
+ * `wasm/src/spread.rs`, which `tests/spread.test.js` holds equal. A longer file is refused with a
+ * message before it is handed to the core, rather than as a code from inside it.
+ */
+export const MAX_EMBED_FRAMES = 1 << 25;
 
 /** The level of the mark relative to the host in its band, in dB. See `docs/steganography.md`. */
 export const DEFAULT_STRENGTH_DB = -20;
 
 /**
- * Samples one copy of the mark needs for `payloadBytes` of payload, at `sampleRate`.
+ * The key used when none is given. It is public, in this source file, so a mark made with it is
+ * one anyone can find and read. That is the right default for a mark meant to be read, and the
+ * wrong one for anything else: give a key.
+ */
+export const DEFAULT_KEY = 0x0123_4567_89ab_cdefn;
+
+/**
+ * A 64-bit key from text, by FNV-1a over its UTF-8 bytes.
+ *
+ * Not a password hash, and not meant to be: it turns a phrase into the 64 bits the keyed sequence
+ * wants, so the same phrase gives the same key on every host. A phrase that can be guessed gives a
+ * key that can be guessed. Empty text gives the public default key, so "no key" is never a
+ * different thing from "the default one".
+ */
+export function keyFromText(text) {
+  const bytes = new TextEncoder().encode(String(text ?? ''));
+  if (bytes.length === 0) return DEFAULT_KEY;
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash;
+}
+
+/** Channels as the core wants them: one planar array, and how many channels it holds. */
+function lay(audio) {
+  if (audio instanceof Float32Array) return { planar: audio, channels: 1, frames: audio.length };
+  if (!Array.isArray(audio) || audio.length === 0 || !audio.every((c) => c instanceof Float32Array)) {
+    throw new TypeError('audio is a Float32Array, or an array of one Float32Array per channel');
+  }
+  const frames = audio[0].length;
+  if (audio.some((c) => c.length !== frames)) {
+    throw new RangeError('the channels are not the same length');
+  }
+  if (audio.length === 1) return { planar: audio[0], channels: 1, frames };
+  const planar = new Float32Array(frames * audio.length);
+  audio.forEach((c, i) => planar.set(c, i * frames));
+  return { planar, channels: audio.length, frames };
+}
+
+/** Planar back to one array per channel. */
+function unlay(planar, channels, frames) {
+  return Array.from({ length: channels }, (_, i) => planar.slice(i * frames, (i + 1) * frames));
+}
+
+/**
+ * Samples **per channel** one copy of the mark needs for `payloadBytes` of payload, at
+ * `sampleRate`.
  *
  * A track shorter than this cannot carry the mark, and `embed` refuses it. A track several times
  * longer carries several copies, which is where the robustness comes from.
@@ -23,22 +82,45 @@ export function minSamples(core, payloadBytes, sampleRate) {
 }
 
 /**
- * Put a payload into audio. Returns a new Float32Array; the input is not modified.
+ * Put a payload into audio. The input is not modified.
  *
- * Throws `RangeError` for audio too short to hold one copy, naming how much it needs.
+ * Returns the same shape it was given: a `Float32Array` for a `Float32Array`, an array of them for
+ * an array. Throws `RangeError` for audio too short to hold one copy, naming how much it needs.
  */
-export function embed(core, audio, payload, { key = 0, sampleRate, flags = 0, strengthDb = DEFAULT_STRENGTH_DB } = {}) {
+export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, flags = 0, strengthDb = DEFAULT_STRENGTH_DB } = {}) {
   if (!Number.isFinite(sampleRate)) {
     throw new TypeError('sampleRate is required: the mark is defined at 44.1 kHz and the core resamples to it');
   }
   const bytes = frame(payload, flags);
-  const needed = core.ssMinSamples(bytes.length, sampleRate);
-  if (audio.length < needed) {
+  const { planar, channels, frames } = lay(audio);
+  if (frames > MAX_EMBED_FRAMES) {
     throw new RangeError(
-      `a ${payload.length} byte payload needs ${needed} samples at ${sampleRate} Hz, have ${audio.length}`,
+      `${frames} samples per channel is more than one call will mark (${MAX_EMBED_FRAMES}, about ` +
+        `${Math.floor(MAX_EMBED_FRAMES / sampleRate / 60)} minutes at ${sampleRate} Hz): split the track`,
     );
   }
-  return core.ssEmbed(audio, bytes, splitKey(key), sampleRate, strengthDb);
+  const needed = core.ssMinSamples(bytes.length, sampleRate);
+  if (frames < needed) {
+    throw new RangeError(
+      `a ${payload.length} byte payload needs ${needed} samples per channel at ${sampleRate} Hz, have ${frames}`,
+    );
+  }
+  const marked = core.ssEmbed(planar, bytes, splitKey(key), sampleRate, strengthDb, channels);
+  return audio instanceof Float32Array ? marked : unlay(marked, channels, frames);
+}
+
+/**
+ * The core's answer as it comes, without interpreting the frame.
+ *
+ * `{ status: 'verified' | 'damaged' | 'none', frame, confidence }`. The attack harness needs the
+ * frame bytes of a read that failed its checksum, to count how many bits survived, and `detect`
+ * deliberately does not hand those out for a read that succeeded. Nothing but a tool measuring the
+ * scheme has a reason to call this; a caller that wants an identifier wants `detect`.
+ */
+export function detectRaw(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
+  if (!Number.isFinite(sampleRate)) throw new TypeError('sampleRate is required');
+  const { planar, channels } = lay(audio);
+  return core.ssDetect(planar, splitKey(key), sampleRate, channels);
 }
 
 /**
@@ -54,11 +136,12 @@ export function embed(core, audio, payload, { key = 0, sampleRate, flags = 0, st
  * `confidence` is the sync peak in standard deviations, a measure of how clearly the start of the
  * mark stood out, and not a probability.
  */
-export function detect(core, audio, { key = 0, sampleRate } = {}) {
+export function detect(core, audio, { key = DEFAULT_KEY, sampleRate } = {}) {
   if (!Number.isFinite(sampleRate)) {
     throw new TypeError('sampleRate is required');
   }
-  const found = core.ssDetect(audio, splitKey(key), sampleRate);
+  const { planar, channels } = lay(audio);
+  const found = core.ssDetect(planar, splitKey(key), sampleRate, channels);
   if (found.status === 'none') return { ok: false, reason: 'none', confidence: found.confidence };
   if (found.status === 'damaged') {
     return { ok: false, reason: 'damaged', frame: found.frame, confidence: found.confidence };

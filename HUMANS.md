@@ -32,6 +32,8 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
       unprocessed audio, and say whether they sound like the same thing. The comparison needs two people who know what the
       reference is supposed to sound like, which is one. Nothing in the suite can hear anything, and a port that decodes
       correctly can still sound plainly wrong.
+- [ ] **Try the page on a phone, with a long stereo file.** The marker needs about 1.2 GB for six minutes of stereo and
+      nothing has run it on a phone. See what happens at three minutes and at ten.
 - [ ] **Listen to the spread-spectrum mark at -20 dB, and say where it becomes audible.** The embedder exists
       and reads at -20 dB and not at -26. Whether -20 dB is acceptable is a listening question with no proxy.
       `node bin/attack.js --in track.wav --payload "x" --scheme spread --strength -20 --out marked.wav` writes the

@@ -220,7 +220,7 @@ Hosts were real audio, because the first run was not. On the synthetic track fro
 (harmonic notes and a little noise) the scheme survived 21 of 22 rows including both removal rows,
 which would have been a very good result if the host had been any good. It was not: tones occupy a
 few bins and leave the rest of the band nearly empty, so any mark in that band is easy to read. Real
-audio is denser, and the same scheme dropped to 17 and 18 of 20.
+audio is denser, and the same scheme dropped to 17 and 19 of 20.
 
 | Host | Length | Level |
 |---|---|---|
@@ -228,7 +228,8 @@ audio is denser, and the same scheme dropped to 17 and 18 of 20.
 | `round60`: a minute of a long personal recording, local only and not in the repository | 60 s | mean -34 dBFS, peak -17 dBFS |
 
 44.1 kHz mono, 22-byte payload (32-byte frame), mark at -20 dB relative to the host in band. Two to
-three copies of the stream fit. Every row that reads is a bit error rate of 0.0%, so only the
+three copies of the stream fit. These tables were measured after the sync fix described below,
+with key 2, which is one of the keys the bug made unreadable. Every row that reads is a bit error rate of 0.0%, so only the
 outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
 
 | Attack | `loops` | `round60` |
@@ -243,7 +244,7 @@ outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
 | pink noise 20 dB SNR | **lost** | **lost** |
 | low-pass 5 kHz / 1 kHz | read | read |
 | high-pass 200 Hz | read | read |
-| high-pass 2 kHz | read | **lost** |
+| high-pass 2 kHz | read | read |
 | resample to 48 kHz | read | read |
 | resample to 22.05 kHz | read | read |
 | time shift 1000 samples | read | read |
@@ -254,24 +255,68 @@ outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
 The bar set above is met: `resample to 48 kHz` and `mp3 64k` both beat 50%, by being read exactly,
 on both hosts. The noise rows are SNR against the host's peak, so "20 dB" is noise ten times quieter
 than the loudest sample and far louder than a mark at -20 dB of the band. Losing there is not
-surprising. The high-pass 2 kHz loss on the quiet recording is the scheme running out of band:
-2 kHz to 8 kHz is what is left.
+surprising.
 
-### The margin is thin, and that is the finding
+### The margin, and a bug that made it look thinner than it was
 
-Strength sweep, same hosts, same list (the control row included):
+The first strength sweep, with the default key, showed a cliff: 17 and 18 of 20 at -20 dB, then 13 and
+0 at -26 dB, and nothing readable at -32 dB. It was reported as the scheme's real margin, about 3 dB.
+**It was mostly a bug.** Reading a stereo file with a user's key failed outright, and the cause was
+not the stereo:
+
+- The reader finds the start of a copy by correlating a 32-bit sync word against the soft bit values,
+  and kept only peaks more than 5 "robust standard deviations" above the other scores.
+- That spread is measured from the scores themselves, and every window of the stream contains data bits at
+  full signal strength. So the spread grows with the mark, and a perfect mark with no noise at all can only
+  peak at about sqrt(32) = 5.7 of it. A threshold of 5 sat almost on that ceiling.
+- Whether a given key cleared it depended on how its sync word's sidelobes fell. On the quiet recording
+  **9 of 14 keys could not read their own mark.** The default key was one of the lucky ones, which is why
+  every measurement before this was fine and the sweep had a cliff in the wrong place.
+- The fix is a threshold of 2.5 and sixteen candidates instead of eight. The threshold only selects which
+  peaks are worth trying; the frame's magic, version and CRC-16 decide whether anything was found, so
+  lowering it adds work, not false positives. `every_key_reads_its_own_mark_not_only_the_lucky_ones` and
+  a test that the threshold stays well under the ceiling guard it, and both go red with the old value.
+
+Strength sweep after the fix, same hosts, same list, key 2 (rows of 20, the control included):
 
 | Mark level | `loops` | `round60` |
 |---|---|---|
-| -20 dB | 17 of 20 | 18 of 20 |
-| -23 dB | 16 of 20 | 14 of 20, `mp3 64k` lost |
-| -26 dB | 13 of 20 | 0 of 20, control lost |
-| -32 dB | 1 of 20 | 0 of 20 |
+| -20 dB | 17 of 20 | 19 of 20 |
+| -26 dB | 13 of 20 | 18 of 20 |
+| -32 dB | 9 of 20 | 14 of 20 |
 | -38 dB | 0 of 20 | 0 of 20 |
 
-It falls off a cliff, not a slope. That is what a correlation receiver does: there is a threshold
-where the sync peak stops standing above the noise, and below it nothing reads, including the untouched
-file. Between -20 and -23 dB is the last 3 dB of margin on a track a minute long.
+The cliff is still there but it is at about -35 dB, not -23, and well below it the loss is gradual:
+at -32 dB on the quiet recording the untouched file and every mild attack still read, and the rows that
+fail are the noise ones, a 1 kHz low-pass and a 2 kHz high-pass. At -38 dB nothing reads, not even the
+untouched file. Near the edge a few rows come back `damaged` with 1 to 3 percent of bits wrong, which
+is the Hamming code running out: a stronger code would turn some of those into reads.
+
+The point of the sweep is that the level the scheme needs is lower than first thought, which matters
+because the level that is inaudible is a listening question and may well be lower than -20 dB.
+
+### Stereo
+
+Real music is stereo, so the core takes planar channels (`core_ss_embed` and `core_ss_detect` have a
+`channels` argument, and `spread::embed_planar` and `detect_planar` are what they call). The policy is
+the core's, so every host gets it:
+
+- **Every channel carries the same stream**, on the same carrier, from sample zero, each at its own
+  channel's level. Nothing is gained from stereo except what this buys: a fold to mono adds the carriers in
+  phase, one channel alone carries the whole mark, a silent channel stays silent, and antiphase channels
+  cannot cancel the mark because it is not in the host's own mid.
+- **A read uses the average of the channels**, which is what a fold gives and what any one channel is half
+  of. Only the first `MAX_ANALYSIS` frames are read.
+- Up to eight channels. A track longer than `MAX_EMBED_FRAMES` (2^25 frames, about 12.7 minutes at 44.1 kHz)
+  is refused rather than truncated.
+
+Measured on the 60 second stereo excerpt of the quiet recording, key 2, -20 dB: 21 of 22 rows read,
+including `stereo to mono (fold)`, `one channel only`, and both MP3 rows with two channels kept through
+ffmpeg. The row lost is pink noise at 20 dB SNR.
+
+A six-minute stereo file marks in about 2.7 seconds and reads in about 1.7 in Wasm under Node, and the
+marker's peak memory is about 1.2 GB, which is a lot for a phone and not a limit anyone has tested. Most of
+it is copies of the channels; chunked embedding would cut it, and is in `TODO.md`.
 
 ### What this does not say
 
@@ -285,9 +330,10 @@ file. Between -20 and -23 dB is the last 3 dB of margin on a track a minute long
   nothing for a spread-spectrum mark, so they are LSB-only in the harness now. A keyless attack on
   this scheme (notch the band, whiten and subtract, collusion between differently-marked copies) is
   not measured.
-- Two hosts, one payload size, mono. The mark's level follows the host's in-band RMS per 1024-sample
+- Two hosts, one payload size, and one key per table. The mark's level follows the host's in-band RMS per 1024-sample
   block, which is a crude stand-in for a masking threshold and not a model of one.
-- It is slow enough to notice: about 0.6 s to embed and 1.7 s to read a minute of audio in Wasm.
+- Reading takes about 1.7 s for the first three minutes of any file, which is the most it looks at. Marking
+  is about 0.5 s per minute per channel.
 
 ## How you would remove the mark
 

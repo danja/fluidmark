@@ -522,13 +522,15 @@ pub const SS_DAMAGED: i32 = 2;
 
 fn spread_error(e: spread::SpreadError) -> i32 {
     match e {
-        spread::SpreadError::BadRate => CORE_ERR_RANGE,
-        spread::SpreadError::BadFrame | spread::SpreadError::TooShort => CORE_ERR_LENGTH,
+        spread::SpreadError::BadRate | spread::SpreadError::BadChannels => CORE_ERR_RANGE,
+        spread::SpreadError::BadFrame
+        | spread::SpreadError::TooShort
+        | spread::SpreadError::TooLong => CORE_ERR_LENGTH,
     }
 }
 
-/// How many samples of audio at `sample_rate` one copy of a spread-spectrum mark needs for a frame
-/// of `frame_bytes`. Shorter audio is refused by `core_ss_embed`.
+/// How many samples **per channel** of audio at `sample_rate` one copy of a spread-spectrum mark
+/// needs for a frame of `frame_bytes`. Shorter audio is refused by `core_ss_embed`.
 #[no_mangle]
 pub extern "C" fn core_ss_min_samples(frame_bytes: u32, sample_rate: f64) -> u32 {
     if !(sample_rate > 0.0) {
@@ -541,7 +543,9 @@ pub extern "C" fn core_ss_min_samples(frame_bytes: u32, sample_rate: f64) -> u32
 /// Mark audio with the spread-spectrum scheme, in place.
 ///
 /// `audio` counts samples and `frame` counts bytes, and the frame is a whole frame as
-/// `core_frame`-style framing produces it. `strength_db` is the mark's level relative to the host
+/// `core_frame`-style framing produces it. `audio` is **planar**: `channels` runs of equal length,
+/// one after another, so its length must be a multiple of `channels`. Every channel carries the
+/// same stream; `docs/steganography.md` has the reasoning. One channel is plain mono. `strength_db` is the mark's level relative to the host
 /// in the carrier's band; -20 is the default. Returns `CORE_ERR_LENGTH` for audio too short to hold
 /// one copy, which `core_ss_min_samples` reports in advance.
 #[no_mangle]
@@ -552,6 +556,7 @@ pub unsafe extern "C" fn core_ss_embed(
     key_hi: u32,
     sample_rate: f64,
     strength_db: f64,
+    channels: u32,
 ) -> i32 {
     if audio.is_null() || frame.is_null() {
         return CORE_ERR_NULL;
@@ -568,7 +573,7 @@ pub unsafe extern "C" fn core_ss_embed(
     let key = ((key_hi as u64) << 32) | key_lo as u64;
     let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
     let bytes = std::slice::from_raw_parts(frame as *const u8, frame_header.len as usize);
-    match spread::embed(samples, bytes, key, sample_rate, strength_db) {
+    match spread::embed_planar(samples, channels as usize, bytes, key, sample_rate, strength_db) {
         Ok(marked) => {
             std::ptr::copy_nonoverlapping(marked.as_ptr(), audio, marked.len());
             CORE_OK
@@ -585,13 +590,15 @@ pub unsafe extern "C" fn core_ss_embed(
 /// is zero. Only the first means anything may be believed. `confidence` receives how far the sync
 /// peak stood above the noise, in standard deviations, and is zero when there was no peak.
 ///
-/// The work is bounded: only the first `spread::MAX_ANALYSIS` samples are read.
+/// `audio` is planar, as for `core_ss_embed`, and what is read is the average of its channels. The
+/// work is bounded: only the first `spread::MAX_ANALYSIS` frames are read.
 #[no_mangle]
 pub unsafe extern "C" fn core_ss_detect(
     audio: *const f32,
     sample_rate: f64,
     key_lo: u32,
     key_hi: u32,
+    channels: u32,
     out: *mut f32,
     confidence: *mut f64,
 ) -> i32 {
@@ -609,7 +616,7 @@ pub unsafe extern "C" fn core_ss_detect(
     }
     let key = ((key_hi as u64) << 32) | key_lo as u64;
     let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
-    let found = match spread::detect(samples, sample_rate, key) {
+    let found = match spread::detect_planar(samples, channels as usize, sample_rate, key) {
         Ok(found) => found,
         Err(e) => return spread_error(e),
     };
