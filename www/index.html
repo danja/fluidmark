@@ -79,8 +79,8 @@
 
         <div class="field">
           <label for="source">Music file</label>
-          <input type="file" id="source" name="source" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" aria-describedby="source-help source-info" />
-          <p id="source-help" class="help">WAV, MP3, FLAC, OGG or M4A. Nothing leaves this page.</p>
+          <input type="file" id="source" name="source" accept=".wav,.mp3,audio/wav,audio/x-wav,audio/mpeg" aria-describedby="source-help source-info" />
+          <p id="source-help" class="help">WAV or MP3, mono. Nothing leaves this page.</p>
           <!-- Announced by nothing on some browsers, so it is also in text. -->
           <p id="source-info" class="help file-info" data-empty="No file chosen.">No file chosen.</p>
         </div>
@@ -105,7 +105,7 @@
 
         <div class="field">
           <label for="marked">Marked file</label>
-          <input type="file" id="marked" name="marked" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" aria-describedby="marked-help marked-info" />
+          <input type="file" id="marked" name="marked" accept=".wav,.mp3,audio/wav,audio/x-wav,audio/mpeg" aria-describedby="marked-help marked-info" />
           <p id="marked-help" class="help">WAV or MP3. Nothing leaves this page.</p>
           <p id="marked-info" class="help file-info" data-empty="No file chosen.">No file chosen.</p>
         </div>

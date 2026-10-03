@@ -375,3 +375,21 @@ describe('everything the page loads resolves inside the prefix', () => {
     expect(readFileSync(`${root}Dockerfile`, 'utf8')).toMatch(/COPY src \/srv\/src/);
   });
 });
+
+describe('a failure can be seen from where the button is', () => {
+  const css = readFileSync(www('style.css'), 'utf8');
+
+  it('keeps the status line in view, because the buttons are far below it', () => {
+    // The status line was above the fold, an error went into it, and the button reset as if
+    // nothing had happened. Sticky is what keeps it on screen. Layout cannot be measured here, so
+    // this only checks the rule is present; `npm run check:web` is where it is seen.
+    expect(css).toMatch(/\.status\s*\{[^}]*position:\s*sticky/);
+  });
+
+  it('does not offer formats the page cannot read', () => {
+    expect(html).not.toMatch(/FLAC, OGG or M4A/);
+    for (const input of html.matchAll(/<input type="file"[^>]*accept="([^"]+)"/g)) {
+      expect(input[1], 'accepts a format readAudio refuses').not.toMatch(/flac|ogg|m4a|audio\/\*/);
+    }
+  });
+});

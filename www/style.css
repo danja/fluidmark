@@ -268,11 +268,29 @@ button[aria-busy="true"] {
   font-weight: 600;
 }
 
+/* The one place both operations report to. It sticks to the top of the viewport, because the buttons
+   are far below it: a status line above the fold made a failure invisible, and the button simply
+   reset as though nothing had happened. The words carry the meaning ("Could not mark that file"),
+   not the colour. */
 .status {
-  min-height: 1.5rem;
+  position: sticky;
+  top: 0;
+  z-index: 10;
   margin: 0.5rem 0;
-  font-size: 0.95rem;
-  color: var(--muted);
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.status:empty {
+  display: none;
+}
+
+.status:not(:empty) {
+  padding: 0.6rem 0.9rem;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
 }
 
 footer {

@@ -107,7 +107,7 @@ async function readAudio(file) {
     return { wav: { samples, sampleRate: 22050, channels: 1, bitsPerSample: 16 } };
   }
   throw new Error(
-    `${file.name}: this page reads WAV and MP3. Other formats would need a decoder this page does not have.`,
+    `${file.name}: this page reads WAV and MP3 only. FLAC, OGG and M4A would need a decoder this page does not have.`,
   );
 }
 
