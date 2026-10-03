@@ -109,13 +109,32 @@ measured baseline.
       the payload unreadable at a bit error rate near 50%, which is random.
 - [x] **A false-positive measurement**: 20 noise buffers, none reported as carrying a mark.
 - [x] **`bin/attack.js`**, which prints the table and can write the marked file.
-- [ ] **Spread spectrum in a transform domain.** Keyed spreading sequence, a sync word the decoder
-      can find, a length field, FEC and interleaving. The bar is in the table in
-      `docs/steganography.md`: `resample to 48 kHz` and `mp3 64k` must beat 50%.
-- [ ] **Synchronisation.** LSB has no sync word, so a reader has to be told the payload's length.
-      This is why `extract` requires `payloadBytes` and why a real scheme cannot.
-- [ ] **Forward error correction and interleaving.** So a burst of damage costs symbols rather than
-      the message. Transcoding damage arrives in one band.
+- [x] **Spread spectrum, first version.** `wasm/src/spread.rs`: keyed band-limited carrier, a sync word
+      found blind, a length in the frame, Hamming(7,4) with a keyed interleave, soft combining of repeats,
+      LPC whitening, resampling to the mark's rate. Through the harness on real audio it beats the two rows
+      the bar named (`resample to 48 kHz`, `mp3 64k`) and reads 17-18 of 20. `docs/steganography.md` has
+      the table.
+- [x] **Synchronisation.** The reader finds the bit boundary and the copy boundary blind, so crop and time
+      shift cost nothing and the payload length is read from the stream, not told to the reader. The
+      remaining thing it cannot find is the sample rate, which is told.
+- [x] **Forward error correction and interleaving**, at the level of Hamming(7,4) and a keyed permutation,
+      with repeats soft-combined. A stronger code is its own item below.
+- [ ] **Widen the margin.** The mark reads at -20 dB and not at -26 dB, and the loss is a cliff. Whether
+      -20 dB is inaudible is unmeasured and may be too loud. Options in order of cost: more chips per bit,
+      a stronger code than Hamming (convolutional with Viterbi, or LDPC), weighting bands by how clean the
+      host is there, and a longer-lived frame that fits more copies. Each is measured through the harness
+      on real audio, at a fixed strength, against the 17-18 of 20 above.
+- [ ] **A removal attack for the spread scheme.** The scrub rows are LSB-only now. Keyless: notch the band,
+      whiten and subtract, a re-synthesis through a codec at a low rate, and collusion between two
+      differently-marked copies. Each is a row in the table with its own figure.
+- [ ] **Real audio in the repository, with a licence that allows it.** The hosts used for the table are
+      not in the tree (Sonic Pi's samples are on this machine, and a personal recording is not
+      redistributable). Tests run on `src/synth.js`, which is too easy. Find a few seconds each of dense,
+      quiet, and bright material with a licence that permits redistribution, and run the suite on them.
+- [ ] **A tool that embeds and reads the spread mark in a file**, as `bin/mark.js` does for the tones.
+      `bin/attack.js --out` writes a marked WAV today, and nothing reads one back outside the harness.
+- [ ] **Speed.** About 0.6 s to embed and 1.7 s to read a minute in Wasm. Reading is dominated by the
+      whitening filter and the per-block FFTs; neither has been profiled.
 - [ ] **The psychoacoustic layer**, so the mark sits under a masking threshold rather than at a
       fixed level. Needs the audibility criterion from the decisions list first.
 - [ ] **The native applications**: embed and extract, over the same core the browser and the tools

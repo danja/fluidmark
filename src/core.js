@@ -24,6 +24,9 @@ export const ABI_VERSION_EXPECTED = 1;
 /** Samples of scratch the attack entry point needs; 65536 covers a second at 44.1 kHz. */
 const ATTACK_SCRATCH = 65536;
 
+/** The largest frame the format can carry: a header and a 16-bit length of payload. */
+const SS_FRAME_CAPACITY = 10 + 0xffff;
+
 /** Slack in an attack buffer, for attacks that lengthen the signal. */
 const ATTACK_HEADROOM = 8192;
 
@@ -326,6 +329,72 @@ export function createCore(instance) {
   }
 
   /**
+   * Samples one copy of a spread-spectrum mark needs for a frame of `frameBytes`, at `sampleRate`.
+   * Ask before embedding: the core refuses audio shorter than this.
+   */
+  function ssMinSamples(frameBytes, sampleRate) {
+    return e.core_ss_min_samples(frameBytes, sampleRate);
+  }
+
+  /**
+   * Mark audio with the spread-spectrum scheme, returning a new Float32Array.
+   *
+   * `frame` is a whole frame (see `src/frame.js`). `strengthDb` is the mark's level relative to
+   * the host in the carrier's band. Nothing here says whether that level is audible.
+   */
+  function ssEmbed(audio, frame, key, sampleRate, strengthDb) {
+    if (!(audio instanceof Float32Array)) {
+      throw new TypeError('ssEmbed needs a Float32Array');
+    }
+    if (!(frame instanceof Uint8Array)) {
+      throw new TypeError('ssEmbed needs the frame as a Uint8Array');
+    }
+    const audioBuffer = createBuffer(Math.max(1, audio.length));
+    const frameBuffer = createBuffer(Math.max(1, frame.length));
+    try {
+      fillSamples(audioBuffer, audio);
+      fillBytes(frameBuffer, frame);
+      check(
+        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb),
+        'core_ss_embed',
+      );
+      return readBuffer(audioBuffer);
+    } finally {
+      destroyBuffer(frameBuffer);
+      destroyBuffer(audioBuffer);
+    }
+  }
+
+  /**
+   * Look for a spread-spectrum mark in audio at `sampleRate`.
+   *
+   * Returns `{ status, frame, confidence }`. `status` is `'verified'` only when the frame's
+   * checksum matched, `'damaged'` when a header was found and the checksum did not, and
+   * `'none'` when nothing was. `frame` is the bytes as read, and is not to be believed unless
+   * the status is `'verified'`. `confidence` is the sync peak in standard deviations.
+   */
+  function ssDetect(audio, key, sampleRate) {
+    if (!(audio instanceof Float32Array)) {
+      throw new TypeError('ssDetect needs a Float32Array');
+    }
+    const audioBuffer = createBuffer(Math.max(1, audio.length));
+    const outBuffer = createBuffer(SS_FRAME_CAPACITY);
+    try {
+      fillSamples(audioBuffer, audio);
+      const code = e.core_ss_detect(
+        audioBuffer.ptr, sampleRate, key.lo, key.hi, outBuffer.ptr, scratch,
+      );
+      if (code < 0) check(code, 'core_ss_detect');
+      const confidence = doubleOut(memory, scratch)[0];
+      const status = code === 0 ? 'verified' : code === 2 ? 'damaged' : 'none';
+      return { status, frame: readBytes(outBuffer), confidence };
+    } finally {
+      destroyBuffer(outBuffer);
+      destroyBuffer(audioBuffer);
+    }
+  }
+
+  /**
    * Apply one attack to a buffer, in place.
    *
    * `id` is one of the `ATTACKS` values in `src/attacks.js`, `param` means what that table says
@@ -377,6 +446,9 @@ export function createCore(instance) {
     decodeBytes,
     embedLsb,
     extractLsb,
+    ssMinSamples,
+    ssEmbed,
+    ssDetect,
     attack,
     destroy,
   };

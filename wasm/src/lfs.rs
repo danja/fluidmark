@@ -22,7 +22,7 @@ use crate::frame::HEADER_BYTES;
 /// Not a cryptographic generator. It has to be reproducible from a key on both sides and fast
 /// over millions of samples; those are the requirements, and "cryptographically strong" is not
 /// among them for a position sequence.
-fn splitmix64(state: &mut u64) -> u64 {
+pub fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -68,7 +68,7 @@ impl Positions {
         *self.moved.get(&index).unwrap_or(&index)
     }
 
-    fn next(&mut self) -> Option<usize> {
+    pub fn next(&mut self) -> Option<usize> {
         if self.next >= self.wanted || self.next >= self.limit {
             return None;
         }
@@ -327,10 +327,3 @@ mod tests {
     }
 }
 
-    #[test]
-    fn probe_positions() {
-        let mut p = Positions::new(42, 44100, 336);
-        let mut n = 0u64;
-        while let Some(_pos) = p.next() { n += 1; if n > 1_000_000 { panic!("runaway"); } }
-        println!("yielded {n}");
-    }

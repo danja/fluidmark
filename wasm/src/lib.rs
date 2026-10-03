@@ -14,6 +14,11 @@ pub mod codec;
 pub mod frame;
 pub mod lfs;
 pub mod dsp;
+pub mod ecc;
+pub mod fft;
+pub mod filter;
+pub mod resample;
+pub mod spread;
 pub mod pitch;
 pub mod roundtrip;
 pub mod signal;
@@ -508,4 +513,117 @@ pub unsafe extern "C" fn core_goertzel_power(
     let samples = std::slice::from_raw_parts(ptr, header.len as usize);
     *out = dsp::goertzel_power(samples, freq as f64, sample_rate as f64);
     CORE_OK
+}
+
+/// `core_ss_detect` outcomes that are not errors. `CORE_OK` (0) means a frame was found and its
+/// checksum matched, and these two are the other things a read can honestly say.
+pub const SS_NO_MARK: i32 = 1;
+pub const SS_DAMAGED: i32 = 2;
+
+fn spread_error(e: spread::SpreadError) -> i32 {
+    match e {
+        spread::SpreadError::BadRate => CORE_ERR_RANGE,
+        spread::SpreadError::BadFrame | spread::SpreadError::TooShort => CORE_ERR_LENGTH,
+    }
+}
+
+/// How many samples of audio at `sample_rate` one copy of a spread-spectrum mark needs for a frame
+/// of `frame_bytes`. Shorter audio is refused by `core_ss_embed`.
+#[no_mangle]
+pub extern "C" fn core_ss_min_samples(frame_bytes: u32, sample_rate: f64) -> u32 {
+    if !(sample_rate > 0.0) {
+        return 0;
+    }
+    let at_rate = (spread::copy_samples(frame_bytes as usize) as f64) * sample_rate / spread::RATE;
+    at_rate.ceil().min(u32::MAX as f64) as u32
+}
+
+/// Mark audio with the spread-spectrum scheme, in place.
+///
+/// `audio` counts samples and `frame` counts bytes, and the frame is a whole frame as
+/// `core_frame`-style framing produces it. `strength_db` is the mark's level relative to the host
+/// in the carrier's band; -20 is the default. Returns `CORE_ERR_LENGTH` for audio too short to hold
+/// one copy, which `core_ss_min_samples` reports in advance.
+#[no_mangle]
+pub unsafe extern "C" fn core_ss_embed(
+    audio: *mut f32,
+    frame: *const f32,
+    key_lo: u32,
+    key_hi: u32,
+    sample_rate: f64,
+    strength_db: f64,
+) -> i32 {
+    if audio.is_null() || frame.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(audio_header) = header_of(audio) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(frame_header) = header_of(frame) else {
+        return CORE_ERR_MAGIC;
+    };
+    if audio_header.len == 0 || frame_header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+    let key = ((key_hi as u64) << 32) | key_lo as u64;
+    let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
+    let bytes = std::slice::from_raw_parts(frame as *const u8, frame_header.len as usize);
+    match spread::embed(samples, bytes, key, sample_rate, strength_db) {
+        Ok(marked) => {
+            std::ptr::copy_nonoverlapping(marked.as_ptr(), audio, marked.len());
+            CORE_OK
+        }
+        Err(e) => spread_error(e),
+    }
+}
+
+/// Look for a spread-spectrum mark in audio, with no knowledge of where it starts.
+///
+/// Returns `CORE_OK` when a frame was found and verified, `SS_NO_MARK` when nothing was, and
+/// `SS_DAMAGED` when a frame header was found but its checksum did not match. In the first and
+/// third cases the frame bytes as read are in `out`, whose length counts bytes; in the second it
+/// is zero. Only the first means anything may be believed. `confidence` receives how far the sync
+/// peak stood above the noise, in standard deviations, and is zero when there was no peak.
+///
+/// The work is bounded: only the first `spread::MAX_ANALYSIS` samples are read.
+#[no_mangle]
+pub unsafe extern "C" fn core_ss_detect(
+    audio: *const f32,
+    sample_rate: f64,
+    key_lo: u32,
+    key_hi: u32,
+    out: *mut f32,
+    confidence: *mut f64,
+) -> i32 {
+    if audio.is_null() || out.is_null() || confidence.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let Some(audio_header) = header_of(audio) else {
+        return CORE_ERR_MAGIC;
+    };
+    let Some(out_header) = header_of(out) else {
+        return CORE_ERR_MAGIC;
+    };
+    if audio_header.len == 0 {
+        return CORE_ERR_LENGTH;
+    }
+    let key = ((key_hi as u64) << 32) | key_lo as u64;
+    let samples = std::slice::from_raw_parts(audio, audio_header.len as usize);
+    let found = match spread::detect(samples, sample_rate, key) {
+        Ok(found) => found,
+        Err(e) => return spread_error(e),
+    };
+    if found.frame.len() > out_header.cap as usize {
+        return CORE_ERR_LENGTH;
+    }
+    if !found.frame.is_empty() {
+        std::ptr::copy_nonoverlapping(found.frame.as_ptr(), out as *mut u8, found.frame.len());
+    }
+    out_header.len = found.frame.len() as u32;
+    *confidence = found.sync_sigmas;
+    match found.status {
+        spread::Status::Verified => CORE_OK,
+        spread::Status::NoMark => SS_NO_MARK,
+        spread::Status::Damaged => SS_DAMAGED,
+    }
 }

@@ -3,10 +3,38 @@
 What happened, root cause, prevention. Grouped by lesson rather than by date, newest first inside each. A lesson that lives
 in [AGENTS.md](AGENTS.md) is a pointer, a fix held by a test alone is dropped, everything else is below.
 
-Nothing yet. The project has no source, so no mistake has been made in it to record. The lessons below are carried over
-from sibling repositories and from reading the reference implementation, because they are the ones most likely to recur
-here, and because arriving with them already named is cheaper than arriving with them to be learned. Each says what would
-notice it happening.
+Newest first within a theme. Some entries are lessons carried over from sibling repositories and from reading the
+reference implementation, because they are the ones most likely to recur here; the rest are this project's own. Each says
+what would notice it happening.
+
+## A figure computed from nothing reads as a measurement
+
+**What happened.** `bin/attack.js` computed the bit error rate of a row as `errors / bits` and printed it
+as a percentage. For the spread-spectrum scheme, a row where no sync was found has no bit error rate,
+so the code stored `null`, and the print line did `null * 100` and showed `0.0%`. A lost mark rendered
+as a perfect one in the BER column, beside "no (no mark found)" in the next column. I read three sweep
+tables with it before noticing, and counted the outcomes from the right-hand column by luck.
+
+**Root cause.** A string replacement meant to render `null` as `n/a` did not match the line it was
+aimed at and failed silently, and the next run looked fine because the other column was right.
+
+**Prevention.** A cell that can be "not applicable" is checked by running a case where it is. The harness
+now has such a case in every table (a lost row), and I looked at the cell instead of the count.
+
+## A host too easy for the scheme flatters the scheme
+
+**What happened.** The first harness run on the new spread-spectrum scheme read 21 of 22 rows, including
+removal rows it had no business surviving. The host was `src/synth.js`, a few decaying harmonic notes. On
+real audio the same scheme read 17 and 18 of 20, and the margin was 3 dB, not the 10 or more the
+synthetic table suggested.
+
+**Root cause.** A tonal host leaves most of the band empty, so a mark in it is easy to read. This is the
+"fake more permissive than the real thing" lesson below, in its audio form, and it was already written down
+in `AGENTS.md`. I wrote the generator, ran the harness, and was impressed, in that order.
+
+**Prevention.** The harness is run on real audio before a figure is recorded, and the host and its level are
+named beside every table. `synthTrack` stays as a deterministic test fixture, and its tests say what it is
+not. A result that looks like a breakthrough on the first run is a reason to look for what is too easy.
 
 ## A guard is only as wide as the list it walks
 

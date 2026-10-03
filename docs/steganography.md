@@ -192,6 +192,103 @@ sample-domain mark dies first and where a frequency-domain one is supposed to li
 transcoding is the interference that matters most for music. If a replacement scheme does not beat
 50% on those two, it is not worth building further.
 
+## The spread-spectrum scheme, and what it does through the harness
+
+Built 2026-10-03 as `wasm/src/spread.rs`, with `ecc.rs`, `fft.rs`, `resample.rs` and `filter.rs` under
+it. `node bin/attack.js --scheme spread` runs it through the same list as the control.
+
+**How it works.** A keyed white carrier, band-limited to 250 Hz - 8 kHz, 2048 samples long at 44.1 kHz,
+is multiplied by +1 or -1 for each channel bit and added to the host at a level that follows the host's
+own level in that band. The same stream (32 keyed sync bits, then the frame's header and body, each
+Hamming(7,4) coded and keyed-interleaved) repeats end to end for as long as the track lasts. The
+reader whitens the audio with an LPC filter fitted to the file, finds the bit boundary by folding the
+file onto one carrier period and summing circular cross-correlations (so a crop or time shift costs
+nothing), correlates each block with the carrier for a soft value, finds the copy boundary from the
+sync word, then soft-combines every whole copy before the Hamming decode. A file at another sample
+rate is resampled to 44.1 kHz first, and the rate has to be told to the reader: it is the one thing
+the reader cannot find blind.
+
+**What it will and will not say.** `verified` needs the magic, version, length and CRC-16 to agree;
+a found header with a bad checksum is `damaged`; everything else is `none`. The false-positive
+exposure is the magic plus the CRC, about 2^-48 per candidate, and 8 candidates at most are tried.
+Measured: the unmarked-track control reads `none` on every host used, and the Rust and JS suites
+check unmarked synthetic music, noise, silence and the wrong key.
+
+### Measured
+
+Hosts were real audio, because the first run was not. On the synthetic track from `src/synth.js`
+(harmonic notes and a little noise) the scheme survived 21 of 22 rows including both removal rows,
+which would have been a very good result if the host had been any good. It was not: tones occupy a
+few bins and leave the rest of the band nearly empty, so any mark in that band is easy to read. Real
+audio is denser, and the same scheme dropped to 17 and 18 of 20.
+
+| Host | Length | Level |
+|---|---|---|
+| `loops`: eight drum and instrument loops from Sonic Pi's sample set, joined | 46.6 s | mean -16 dBFS, peak 0 dBFS |
+| `round60`: a minute of a long personal recording, local only and not in the repository | 60 s | mean -34 dBFS, peak -17 dBFS |
+
+44.1 kHz mono, 22-byte payload (32-byte frame), mark at -20 dB relative to the host in band. Two to
+three copies of the stream fit. Every row that reads is a bit error rate of 0.0%, so only the
+outcome is shown; `n/a` means no sync was found, which is not a bit error rate.
+
+| Attack | `loops` | `round60` |
+|---|---|---|
+| none (control) | read | read |
+| unmarked track (control) | none, correct | none, correct |
+| gain -6 / -0.5 / +3 dB | read | read |
+| dither 48 / 36 dB SNR | read | read |
+| white noise 30 dB SNR | read | read |
+| white noise 20 dB SNR | **lost** | read |
+| pink noise 30 dB SNR | **lost** | read |
+| pink noise 20 dB SNR | **lost** | **lost** |
+| low-pass 5 kHz / 1 kHz | read | read |
+| high-pass 200 Hz | read | read |
+| high-pass 2 kHz | read | **lost** |
+| resample to 48 kHz | read | read |
+| resample to 22.05 kHz | read | read |
+| time shift 1000 samples | read | read |
+| crop first 5% | read | read |
+| mp3 128k | read | read |
+| mp3 64k | read | read |
+
+The bar set above is met: `resample to 48 kHz` and `mp3 64k` both beat 50%, by being read exactly,
+on both hosts. The noise rows are SNR against the host's peak, so "20 dB" is noise ten times quieter
+than the loudest sample and far louder than a mark at -20 dB of the band. Losing there is not
+surprising. The high-pass 2 kHz loss on the quiet recording is the scheme running out of band:
+2 kHz to 8 kHz is what is left.
+
+### The margin is thin, and that is the finding
+
+Strength sweep, same hosts, same list (the control row included):
+
+| Mark level | `loops` | `round60` |
+|---|---|---|
+| -20 dB | 17 of 20 | 18 of 20 |
+| -23 dB | 16 of 20 | 14 of 20, `mp3 64k` lost |
+| -26 dB | 13 of 20 | 0 of 20, control lost |
+| -32 dB | 1 of 20 | 0 of 20 |
+| -38 dB | 0 of 20 | 0 of 20 |
+
+It falls off a cliff, not a slope. That is what a correlation receiver does: there is a threshold
+where the sync peak stops standing above the noise, and below it nothing reads, including the untouched
+file. Between -20 and -23 dB is the last 3 dB of margin on a track a minute long.
+
+### What this does not say
+
+- **It does not say the mark is inaudible.** -20 dB relative to the in-band level of the host is a
+  signal difference, SNR is not audibility, and nobody has listened. A mark 20 dB under a loud passage
+  is likely to be audible as hiss in a quiet one. `HUMANS.md` has the listening check, and the level
+  that is acceptable may well be below the level at which this reads. If it is, the scheme has to
+  gain processing gain from somewhere else (longer bits, a stronger code, per-band weighting) before it
+  is a result.
+- It does not say the scheme survives removal. The two removal rows are low-bit scrubs and mean
+  nothing for a spread-spectrum mark, so they are LSB-only in the harness now. A keyless attack on
+  this scheme (notch the band, whiten and subtract, collusion between differently-marked copies) is
+  not measured.
+- Two hosts, one payload size, mono. The mark's level follows the host's in-band RMS per 1024-sample
+  block, which is a crude stand-in for a masking threshold and not a model of one.
+- It is slow enough to notice: about 0.6 s to embed and 1.7 s to read a minute of audio in Wasm.
+
 ## How you would remove the mark
 
 The obvious question, and it is now measured rather than argued. Two answers, both keyless:

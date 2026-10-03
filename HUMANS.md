@@ -12,6 +12,13 @@ Keep this short. An item here is something the work is waiting on.
       unprocessed audio, and say whether they sound like the same thing. The comparison needs two people who know what the
       reference is supposed to sound like, which is one. Nothing in the suite can hear anything, and a port that decodes
       correctly can still sound plainly wrong.
+- [ ] **Listen to the spread-spectrum mark at -20 dB, and say where it becomes audible.** The embedder exists
+      and reads at -20 dB and not at -26. Whether -20 dB is acceptable is a listening question with no proxy.
+      `node bin/attack.js --in track.wav --payload "x" --scheme spread --strength -20 --out marked.wav` writes the
+      marked file (the track has to be long enough, and the tool says how long); play it against the original,
+      then repeat at -26, -32 and -38. Note which passage you hear it in: the level follows the host's, so a
+      quiet passage is the likely place. The answer decides whether the scheme needs more processing gain
+      before it counts as a result. No tool can do this.
 - [ ] **Listen for the mark once there is an inaudible embedding.** Whether the mark is audible is the question the whole
       project turns on, and it is the one measurement with no proxy. Play at a level a listener would actually use, on
       material with a quiet passage as well as a loud one, since a masking threshold that holds on one may not on the other.

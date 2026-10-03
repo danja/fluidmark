@@ -7,4 +7,4 @@
 export { ABI_VERSION_EXPECTED, check, createCore, ERRORS } from './core.js';
 export { doubleOut, floatView, growMemory, isDetached, uint32Out } from './memory.js';
 export { frame, frameBytesFor, unframe, crc16, bitErrors, REASONS } from './frame.js';
-export { embed, extract, extractRaw, splitKey } from './watermark.js';
+export { embed, extract, extractRaw, splitKey } from './watermark.js';export * as spread from './spread.js';

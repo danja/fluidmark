@@ -29,6 +29,19 @@ export interface Core {
   /** The capacity the core has recorded. Must always equal the capacity that was requested. */
   trackedCapacity(buffer: CoreBuffer): number;
   goertzelPower(buffer: CoreBuffer, freq: number, sampleRate: number): number;
+  /** Samples one copy of a spread-spectrum mark needs for a frame of `frameBytes`. */
+  ssMinSamples(frameBytes: number, sampleRate: number): number;
+  /** Mark audio, returning a new array. `key` is `splitKey` output. */
+  ssEmbed(audio: Float32Array, frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number): Float32Array;
+  /**
+   * Look for a spread-spectrum mark. `frame` is the bytes as read and is not to be believed unless
+   * `status` is `'verified'`.
+   */
+  ssDetect(audio: Float32Array, key: { lo: number; hi: number }, sampleRate: number): {
+    status: 'verified' | 'damaged' | 'none';
+    frame: Uint8Array;
+    confidence: number;
+  };
   destroy(): void;
 }
 
