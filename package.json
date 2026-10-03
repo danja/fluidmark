@@ -26,6 +26,7 @@
     "check:web": "node www/browser-check.js http://127.0.0.1:8080",
     "docker:build": "docker build -t fluidmark:local .",
     "docker:run": "docker build -t fluidmark:local . && docker run --rm -p 8080:8080 fluidmark:local",
+    "deploy": "node bin/deploy.js",
     "docker:check": "docker build -t fluidmark:local . && node www/browser-check.js http://127.0.0.1:8080"
   },
   "devDependencies": {

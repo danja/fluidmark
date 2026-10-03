@@ -8,21 +8,23 @@ Keep this short. An item here is something the work is waiting on.
 
 ## Putting an update on the live server
 
-A `git pull` on the server changes nothing by itself: the container has the files copied in when the image is built. From
-the repository root on the server:
+On the server, from the repository root:
 
 ```sh
-git pull
-docker build -t fluidmark:local .
-docker rm -f fluidmark
-docker run -d --name fluidmark --restart unless-stopped -p 127.0.0.1:8080:8080 fluidmark:local
+npm run deploy
 ```
 
-- The site is down for a second or two between `rm -f` and `run`.
+It pulls, builds the image, runs it on a spare port and checks it serves, and only then replaces the live container
+(`fluidmark` on `127.0.0.1:8080`) and checks again. A bad build leaves the live site alone, and a failure after the swap
+puts the previous image back. `bin/deploy.js` says what it did, and exits non-zero on any failure.
+
+- The site is down for a second or two during the swap.
+- Options after `--`: `--no-pull` to deploy what is checked out, `--name`, `--port` and `--spare-port` if 8080 or 8099
+  is taken (change the `proxy_pass` to match).
 - Host nginx needs no reload unless `strandz.it.conf` itself changed (`nginx -t && systemctl reload nginx`).
 - HTML and the Wasm are `no-cache`, so a refresh picks them up; the stylesheet is cached for an hour.
-- Afterwards, open `/fluidmark/`, hard-refresh, check the browser console for errors, and check that `/`, `/jigdaw/`,
-  `/diddums/` still answer as before (`docs/web.md`).
+- It checks the container, not the domain. Afterwards, open `/fluidmark/`, hard-refresh, check the browser console for
+  errors, and check that `/`, `/jigdaw/`, `/diddums/` still answer as before (`docs/web.md`).
 
 ## 1. Checks that need a person
 

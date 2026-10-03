@@ -82,3 +82,6 @@ runs the codec in the page rather than on a server. `docs/web.md`.
 - `docs/web.md`, the browser front end.
 - `docs/ffi.md`, the boundary between the Rust core and its hosts.
 - `AGENTS.md`, `TODO.md`, `INBOX.md`, `HUMANS.md`, `MISTAKES.md`, the working guidance.
+
+On the server that runs it, `npm run deploy` pulls, builds, checks the new image on a spare port, swaps it in and
+rolls back on failure. `HUMANS.md` has the detail.
