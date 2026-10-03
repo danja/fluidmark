@@ -24,6 +24,12 @@ export const MAX_EMBED_FRAMES = 1 << 25;
 export const DEFAULT_STRENGTH_DB = -20;
 
 /**
+ * How far under the model's masking threshold the mark sits, in dB, when `level` is `'masked'`. Not yet
+ * chosen by anyone listening: see `docs/steganography.md` and `HUMANS.md`.
+ */
+export const DEFAULT_MASKED_MARGIN_DB = -6;
+
+/**
  * The key used when none is given. It is public, in this source file, so a mark made with it is
  * one anyone can find and read. That is the right default for a mark meant to be read, and the
  * wrong one for anything else: give a key.
@@ -83,10 +89,20 @@ export function minSamples(core, payloadBytes, sampleRate) {
 /**
  * Put a payload into audio. The input is not modified.
  *
- * Returns the same shape it was given: a `Float32Array` for a `Float32Array`, an array of them for
- * an array. Throws `RangeError` for audio too short to hold one copy, naming how much it needs.
+ * `level` is `'relative'` (the default), where `strengthDb` is the mark's level relative to the music's in
+ * the carrier's band, or `'masked'`, where it is how far under the masking threshold of a simplified
+ * psychoacoustic model the mark sits, in every band and every frame. Returns the same shape it was
+ * given: a `Float32Array` for a `Float32Array`, an array of them for an array. Throws `RangeError` for audio too short to hold one copy, naming how much it needs.
  */
-export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, flags = 0, strengthDb = DEFAULT_STRENGTH_DB } = {}) {
+export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, flags = 0, strengthDb, level = 'relative' } = {}) {
+  if (level !== 'relative' && level !== 'masked') {
+    throw new TypeError(`level is 'relative' or 'masked', got ${level}`);
+  }
+  const mode = level === 'masked' ? 1 : 0;
+  // The default depends on what the number means: dB relative to the music's level in the band, or dB
+  // under the masking threshold. They are different units, and a default for one is not a default for
+  // the other.
+  strengthDb ??= level === 'masked' ? DEFAULT_MASKED_MARGIN_DB : DEFAULT_STRENGTH_DB;
   if (!Number.isFinite(sampleRate)) {
     throw new TypeError('sampleRate is required: the mark is defined at 44.1 kHz and the core resamples to it');
   }
@@ -107,9 +123,9 @@ export function embed(core, audio, payload, { key = DEFAULT_KEY, sampleRate, fla
   // One array per channel goes to the core without a planar copy in between, which is a copy of the
   // whole track saved at the largest point. A single array is already one channel.
   if (Array.isArray(audio)) {
-    return core.ssEmbedChannels(audio, bytes, splitKey(key), sampleRate, strengthDb);
+    return core.ssEmbedChannels(audio, bytes, splitKey(key), sampleRate, strengthDb, mode);
   }
-  return core.ssEmbed(audio, bytes, splitKey(key), sampleRate, strengthDb, 1);
+  return core.ssEmbed(audio, bytes, splitKey(key), sampleRate, strengthDb, 1, mode);
 }
 
 /**

@@ -32,13 +32,13 @@ export interface Core {
   /** Samples one copy of a spread-spectrum mark needs for a frame of `frameBytes`. */
   ssMinSamples(frameBytes: number, sampleRate: number): number;
   /** Mark audio, returning a new array. `key` is `splitKey` output. */
-  ssEmbed(audio: Float32Array, frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number, channels?: number): Float32Array;
+  ssEmbed(audio: Float32Array, frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number, channels?: number, mode?: number): Float32Array;
   /**
    * Look for a spread-spectrum mark. `frame` is the bytes as read and is not to be believed unless
    * `status` is `'verified'`.
    */
   /** `ssEmbed` for one array per channel, without building the planar array first. */
-  ssEmbedChannels(channelData: Float32Array[], frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number): Float32Array[];
+  ssEmbedChannels(channelData: Float32Array[], frame: Uint8Array, key: { lo: number; hi: number }, sampleRate: number, strengthDb: number, mode?: number): Float32Array[];
   /** `ssDetect` for one array per channel. */
   ssDetectChannels(channelData: Float32Array[], key: { lo: number; hi: number }, sampleRate: number): {
     status: 'verified' | 'damaged' | 'none';
@@ -46,6 +46,11 @@ export interface Core {
     confidence: number;
     speed: number;
   };
+  /** Noise-to-mask ratio of a mark in one channel, by a simplified masking model. `null` when nothing was judged. */
+  nmr(original: Float32Array, marked: Float32Array, sampleRate: number, maxFrames?: number): {
+    frames: number; cells: number; meanDb: number; p95Db: number;
+    worstFrameDb: number; worstFrameAt: number; aboveThreshold: number; aboveMinus6: number;
+  } | null;
   ssDetect(audio: Float32Array, key: { lo: number; hi: number }, sampleRate: number, channels?: number): {
     status: 'verified' | 'damaged' | 'none';
     frame: Uint8Array;

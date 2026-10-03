@@ -41,6 +41,7 @@ use crate::fft::fft;
 use crate::filter::{highpass, lowpass, BandPass};
 use crate::frame::{self, FrameError, HEADER_BYTES};
 use crate::lfs::splitmix64;
+use crate::psycho::{self, FrameMeter, BANDS, FRAME, HOP};
 use crate::resample;
 
 /// The rate the mark is defined at. Audio at any other rate is resampled to this to be read, and
@@ -255,6 +256,158 @@ fn level_at(level: &[f32], i: usize) -> f32 {
     level[b0.min(blocks - 1)] * (1.0 - t) + level[b1] * t
 }
 
+/// How the mark's level is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// `strength_db` is the mark's level relative to the music's own level in the carrier's band, the
+    /// same in every band and at every moment. Simple, and blind to what the music hides: it is audible
+    /// where the music is sparse and wasteful where it is dense.
+    Relative,
+    /// `strength_db` is how far under the masking threshold the mark sits, in every critical band and
+    /// every frame: -6 puts it at a quarter of the power the model says the music hides. The mark is
+    /// shaped to follow the threshold, so it is loud where the music is and quiet where it is not.
+    /// The threshold is a model (`psycho.rs`), and a model is not a listener.
+    Masked,
+}
+
+/// Add the mark shaped to sit `margin_db` under the masking threshold, in place.
+///
+/// The thresholds are measured first, from the audio as it is, because the mark added in the first
+/// frames would otherwise be part of what the later ones are measured against. Then each frame of the
+/// carrier is windowed, taken to the frequency domain, scaled band by band so that its energy in each
+/// critical band is the threshold there plus the margin, interpolated smoothly in dB between band
+/// centres so the gain has no steps, and overlap-added back. A frame's threshold is the lowest of its
+/// own and its neighbours', since a mark that is under the threshold in the quiet before a loud note
+/// is under it at the note too, and the other way about is where pre-echo is heard. Digital silence is
+/// left silent.
+fn embed_masked_in_place(
+    samples: &mut [f32],
+    bits: &[f32],
+    period: &[f32],
+    key_rate: (f64, usize),
+    margin_db: f64,
+) {
+    let (sample_rate, n44) = key_rate;
+    let n = samples.len();
+    let meter = FrameMeter::new(sample_rate);
+    let frames = n / HOP + 2;
+    let margin = 10f64.powf(margin_db / 10.0);
+
+    let frame_at = |host: &[f32], f: usize| -> [f32; FRAME] {
+        let mut out = [0.0f32; FRAME];
+        let start = f as isize * HOP as isize - HOP as isize;
+        for (j, slot) in out.iter_mut().enumerate() {
+            let i = start + j as isize;
+            if i >= 0 && (i as usize) < host.len() {
+                *slot = host[i as usize];
+            }
+        }
+        out
+    };
+
+    // Pass 1: thresholds, from the audio as it is.
+    let mut silent = Vec::with_capacity(frames);
+    let mut threshold: Vec<[f64; BANDS]> = Vec::with_capacity(frames);
+    for f in 0..frames {
+        let frame = frame_at(samples, f);
+        silent.push(frame.iter().all(|&x| x == 0.0));
+        threshold.push(meter.thresholds(&frame));
+    }
+    let lowest: Vec<[f64; BANDS]> = (0..frames)
+        .map(|f| {
+            let mut t = threshold[f];
+            for g in [f.saturating_sub(1), (f + 1).min(frames - 1)] {
+                for b in 0..BANDS {
+                    t[b] = t[b].min(threshold[g][b]);
+                }
+            }
+            t
+        })
+        .collect();
+
+    // The carrier at the output rate, at any index. Past the end of the 44.1 kHz stream it is silence.
+    let carrier_44 = |i: usize| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS];
+    let resampler = if (sample_rate - RATE).abs() < 1e-9 { None } else { resample::Resampler::new(n44, RATE, sample_rate) };
+    let carrier_out = |i: usize| -> f32 {
+        match &resampler {
+            None => carrier_44(i),
+            Some(r) if i < r.out_len() => r.sample_at(i, &carrier_44),
+            Some(_) => 0.0,
+        }
+    };
+
+    let sine: Vec<f64> = (0..FRAME).map(|j| ((j as f64 + 0.5) * std::f64::consts::PI / FRAME as f64).sin()).collect();
+    let edges = psycho::band_edges();
+    let centres: Vec<f64> = (0..BANDS).map(|b| (edges[b] + edges[b + 1]) / 2.0).collect();
+    let (mut re, mut im) = (vec![0.0f64; FRAME], vec![0.0f64; FRAME]);
+
+    // Pass 2: the shaped carrier, added in place.
+    for f in 0..frames {
+        if silent[f] {
+            continue;
+        }
+        let start = f as isize * HOP as isize - HOP as isize;
+        let mut c = [0.0f32; FRAME];
+        for (j, slot) in c.iter_mut().enumerate() {
+            let i = start + j as isize;
+            if i >= 0 && (i as usize) < n {
+                *slot = carrier_out(i as usize);
+            }
+        }
+        let own = meter.energy(&c);
+        // Gain per band as a power ratio in dB, where the carrier has anything in the band to scale.
+        let gain_db: Vec<Option<f64>> = (0..BANDS)
+            .map(|b| {
+                if own[b] > 1e-30 {
+                    Some(10.0 * (lowest[f][b] * margin / own[b]).log10())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let valid: Vec<usize> = (0..BANDS).filter(|&b| gain_db[b].is_some()).collect();
+        if valid.is_empty() {
+            continue;
+        }
+        // `gain_db` is a power ratio in dB, so the amplitude gain is ten to the power of a twentieth of it.
+        let amplitude = |hz: f64| -> f64 {
+            let at = valid.partition_point(|&b| centres[b] < hz);
+            let db = if at == 0 {
+                gain_db[valid[0]].unwrap()
+            } else if at == valid.len() {
+                gain_db[valid[valid.len() - 1]].unwrap()
+            } else {
+                let (lo, hi) = (valid[at - 1], valid[at]);
+                let t = (hz - centres[lo]) / (centres[hi] - centres[lo]);
+                gain_db[lo].unwrap() * (1.0 - t) + gain_db[hi].unwrap() * t
+            };
+            10f64.powf(db / 20.0)
+        };
+
+        for j in 0..FRAME {
+            re[j] = c[j] as f64 * sine[j];
+            im[j] = 0.0;
+        }
+        fft(&mut re, &mut im, false);
+        for k in 0..=FRAME / 2 {
+            let g = amplitude(k as f64 * meter.bin_hz);
+            re[k] *= g;
+            im[k] *= g;
+            if k > 0 && k < FRAME / 2 {
+                re[FRAME - k] *= g;
+                im[FRAME - k] *= g;
+            }
+        }
+        fft(&mut re, &mut im, true);
+        for j in 0..FRAME {
+            let i = start + j as isize;
+            if i >= 0 && (i as usize) < n {
+                samples[i as usize] += (re[j] * sine[j]) as f32;
+            }
+        }
+    }
+}
+
 /// Add the mark to `samples`, returning the marked copy.
 ///
 /// `frame` is a whole frame from `frame::encode`. `strength_db` is the mark's level relative to
@@ -285,6 +438,18 @@ pub fn embed_in_place(
     sample_rate: f64,
     strength_db: f64,
 ) -> Result<(), SpreadError> {
+    embed_level_in_place(samples, frame_bytes, key, sample_rate, strength_db, Level::Relative)
+}
+
+/// `embed_in_place` with the level set either relative to the music or under the masking threshold.
+pub fn embed_level_in_place(
+    samples: &mut [f32],
+    frame_bytes: &[u8],
+    key: u64,
+    sample_rate: f64,
+    strength_db: f64,
+    level: Level,
+) -> Result<(), SpreadError> {
     if !(sample_rate >= 8000.0 && sample_rate <= 192_000.0) || !strength_db.is_finite() {
         return Err(SpreadError::BadRate);
     }
@@ -298,6 +463,13 @@ pub fn embed_in_place(
     }
 
     let period = carrier(key);
+    if level == Level::Masked {
+        if samples.len() < FRAME {
+            return Err(SpreadError::TooShort);
+        }
+        embed_masked_in_place(samples, &bits, &period, (sample_rate, n44), strength_db);
+        return Ok(());
+    }
     let carrier_at = |i: usize| bits[(i / CHIPS) % bits.len()] * period[i % CHIPS];
 
     let level = level_blocks(&band_power(samples, sample_rate as f32));
@@ -469,9 +641,11 @@ fn header_is_plausible(header: &[u8]) -> bool {
 }
 
 /// Blocks folded together to place the bit boundary at one point in the file, when tracking timing.
-/// Longer runs give a cleaner peak and tolerate less drift within them, so the longer is tried first
-/// and the shorter, which tolerates a few times more, when it finds nothing.
-const TRACK_BLOCKS: [usize; 2] = [12, 4];
+/// Longer runs give a cleaner peak, about the square root of their length, and tolerate less drift
+/// within them, so they are tried first, and shorter ones, which tolerate more, when they find nothing.
+/// A mark 30 dB under the music has a peak too faint to place from twelve blocks and plain from forty-eight,
+/// and a clock error of 30 parts per million moves the boundary by three samples across those.
+const TRACK_BLOCKS: [usize; 4] = [48, 24, 12, 6];
 
 /// Points along the file at which the boundary is placed. Its drift between them is the timing.
 const TRACK_SPANS: usize = 32;
@@ -952,9 +1126,22 @@ pub fn embed_planar_in_place(
     sample_rate: f64,
     strength_db: f64,
 ) -> Result<(), SpreadError> {
+    embed_planar_level_in_place(samples, channels, frame_bytes, key, sample_rate, strength_db, Level::Relative)
+}
+
+/// `embed_planar_in_place` with the level mode chosen.
+pub fn embed_planar_level_in_place(
+    samples: &mut [f32],
+    channels: usize,
+    frame_bytes: &[u8],
+    key: u64,
+    sample_rate: f64,
+    strength_db: f64,
+    level: Level,
+) -> Result<(), SpreadError> {
     let frames = embed_frames(samples.len(), channels)?;
     for channel in samples.chunks_exact_mut(frames.max(1)) {
-        embed_in_place(channel, frame_bytes, key, sample_rate, strength_db)?;
+        embed_level_in_place(channel, frame_bytes, key, sample_rate, strength_db, level)?;
     }
     Ok(())
 }
@@ -1214,6 +1401,78 @@ mod tests {
             .map(|shift| (0..CHIPS).map(|i| est.carrier[i] * reference[(i + shift) % CHIPS] as f64).sum::<f64>().abs() / rn)
             .fold(0.0f64, f64::max);
         assert!(best > 0.9, "the estimate has a cosine of {best:.3} with the true carrier");
+    }
+
+
+    fn masked(host: &[f32], margin_db: f64, rate: f64) -> Vec<f32> {
+        let mut out = host.to_vec();
+        embed_level_in_place(&mut out, &payload(), KEY, rate, margin_db, Level::Masked).expect("embeds");
+        out
+    }
+
+    #[test]
+    fn the_bands_the_audibility_model_judges_are_the_carriers_own() {
+        assert_eq!(psycho::JUDGED_LOW_HZ, BAND_LO as f64);
+        assert_eq!(psycho::JUDGED_HIGH_HZ, BAND_HI as f64);
+    }
+
+    #[test]
+    fn a_mark_under_the_masking_threshold_sits_where_it_was_asked_to() {
+        // By construction the modelled ratio should land near the margin, and this checks the plumbing
+        // that makes it so: the thresholds, the per-band scaling and the overlap-add. The model is the
+        // same one that does the measuring, so agreement is a check that the shaping works and says
+        // nothing about what is audible.
+        let steady = music(seconds_needed() * 1.3, RATE, 11);
+        for margin in [-6.0f64, -12.0, -20.0] {
+            let out = masked(&steady, margin, RATE);
+            let r = psycho::nmr(&steady, &out, RATE, 200).expect("judged");
+            assert!((r.mean_db - margin).abs() < 3.0, "margin {margin}: mean {:.1}", r.mean_db);
+            assert!(r.p95_db < margin + 6.0, "margin {margin}: 95th percentile {:.1}", r.p95_db);
+        }
+        // A host whose level jumps about is judged against each frame's own threshold, and the mark is
+        // set against the lowest of three neighbours, on purpose: a mark under the threshold in the quiet
+        // before a loud note is under it at the note, and the other way about is where pre-echo is heard.
+        // So it sits under the margin there, by a few dB, and never over it.
+        let jumpy = dynamic(seconds_needed() * 1.3, 11);
+        let out = masked(&jumpy, -6.0, RATE);
+        let r = psycho::nmr(&jumpy, &out, RATE, 200).expect("judged");
+        assert!(r.mean_db < -6.0 + 1.0 && r.mean_db > -6.0 - 9.0, "jumpy host: mean {:.1}", r.mean_db);
+    }
+
+    #[test]
+    fn a_mark_shaped_under_the_threshold_still_reads() {
+        let host = music(seconds_needed() * 2.2, RATE, 7);
+        let out = masked(&host, -6.0, RATE);
+        let found = detect(&out, RATE, KEY).unwrap();
+        assert_eq!(found.status, Status::Verified, "{found:?}");
+        assert_eq!(found.frame, payload());
+    }
+
+    #[test]
+    fn masked_marking_is_deterministic_and_leaves_digital_silence_silent() {
+        let mut host = music(seconds_needed() * 1.3, RATE, 3);
+        for x in host.iter_mut().take(20_000) {
+            *x = 0.0;
+        }
+        let a = masked(&host, -9.0, RATE);
+        let b = masked(&host, -9.0, RATE);
+        assert_eq!(a, b);
+        // Frames wholly inside the silence get nothing. The frames at the edge of it have audio in
+        // them, so only the part well inside is checked.
+        assert!(a[..16_000].iter().all(|&x| x == 0.0), "the silence was marked");
+        assert_ne!(a[30_000..40_000], host[30_000..40_000], "and the rest was");
+    }
+
+    #[test]
+    fn masked_marking_works_at_another_rate_and_refuses_what_is_too_short() {
+        let host = music(seconds_needed() * 2.2, 48_000.0, 5);
+        let out = masked(&host, -6.0, 48_000.0);
+        assert_eq!(detect(&out, 48_000.0, KEY).unwrap().status, Status::Verified);
+        let mut short = vec![0.1f32; 1000];
+        assert_eq!(
+            embed_level_in_place(&mut short, &payload(), KEY, RATE, -6.0, Level::Masked),
+            Err(SpreadError::TooShort),
+        );
     }
 
     #[test]

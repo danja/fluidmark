@@ -21,6 +21,7 @@ pub mod filter;
 pub mod resample;
 pub mod spread;
 pub mod pitch;
+pub mod psycho;
 pub mod roundtrip;
 pub mod signal;
 pub mod tables;
@@ -562,6 +563,7 @@ pub unsafe extern "C" fn core_ss_embed(
     sample_rate: f64,
     strength_db: f64,
     channels: u32,
+    mode: u32,
 ) -> i32 {
     if audio.is_null() || frame.is_null() {
         return CORE_ERR_NULL;
@@ -580,7 +582,12 @@ pub unsafe extern "C" fn core_ss_embed(
     // would be the largest allocation in the call.
     let samples = std::slice::from_raw_parts_mut(audio, audio_header.len as usize);
     let bytes = std::slice::from_raw_parts(frame as *const u8, frame_header.len as usize);
-    match spread::embed_planar_in_place(samples, channels as usize, bytes, key, sample_rate, strength_db) {
+    let level = match mode {
+        0 => spread::Level::Relative,
+        1 => spread::Level::Masked,
+        _ => return CORE_ERR_RANGE,
+    };
+    match spread::embed_planar_level_in_place(samples, channels as usize, bytes, key, sample_rate, strength_db, level) {
         Ok(()) => CORE_OK,
         Err(e) => spread_error(e),
     }
@@ -640,5 +647,60 @@ pub unsafe extern "C" fn core_ss_detect(
         spread::Status::Verified => CORE_OK,
         spread::Status::NoMark => SS_NO_MARK,
         spread::Status::Damaged => SS_DAMAGED,
+    }
+}
+
+
+/// How far a mark sits under what the music masks, by a simplified masking model. See `psycho.rs`
+/// for what the model is and what it is not: it is an objective proxy, and a listener decides.
+///
+/// `original` and `marked` are sample buffers of one channel and the same length. `out` is a buffer
+/// of at least eight samples that receives, as `f32`: frames judged, cells judged, mean NMR in dB, the
+/// 95th percentile, the worst frame's mean in dB, that frame's position as a fraction of the file, the
+/// fraction of cells over the threshold, and the fraction within 6 dB under it. Only `max_frames` frames
+/// spread over the file are judged, so the cost is bounded.
+///
+/// Returns `CORE_OK`, `SS_NO_MARK` (1) when there was nothing to judge, such as digital silence or
+/// two identical files, `CORE_ERR_RANGE` for a rate or frame count that is not positive, and
+/// `CORE_ERR_LENGTH` for audio shorter than one frame or inputs of different lengths.
+#[no_mangle]
+pub unsafe extern "C" fn core_nmr(
+    original: *const f32,
+    marked: *const f32,
+    sample_rate: f64,
+    max_frames: u32,
+    out: *mut f32,
+) -> i32 {
+    if original.is_null() || marked.is_null() || out.is_null() {
+        return CORE_ERR_NULL;
+    }
+    let (Some(a), Some(b), Some(o)) = (header_of(original), header_of(marked), header_of(out)) else {
+        return CORE_ERR_MAGIC;
+    };
+    if !(sample_rate > 0.0) || max_frames == 0 {
+        return CORE_ERR_RANGE;
+    }
+    if (a.len as usize) < psycho::FRAME || a.len != b.len || o.cap < 8 {
+        return CORE_ERR_LENGTH;
+    }
+    let orig = std::slice::from_raw_parts(original, a.len as usize);
+    let mark = std::slice::from_raw_parts(marked, b.len as usize);
+    match psycho::nmr(orig, mark, sample_rate, max_frames as usize) {
+        None => SS_NO_MARK,
+        Some(r) => {
+            let values = [
+                r.frames as f32,
+                r.cells as f32,
+                r.mean_db as f32,
+                r.p95_db as f32,
+                r.worst_frame_db as f32,
+                r.worst_frame_at as f32,
+                r.above_threshold as f32,
+                r.above_minus_6 as f32,
+            ];
+            std::ptr::copy_nonoverlapping(values.as_ptr(), out, 8);
+            o.len = 8;
+            CORE_OK
+        }
     }
 }

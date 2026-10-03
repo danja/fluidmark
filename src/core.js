@@ -349,9 +349,11 @@ export function createCore(instance) {
    * the host in the carrier's band. Nothing here says whether that level is audible.
    *
    * `audio` is planar when `channels` is more than one: all of channel 0, then all of channel 1.
-   * Every channel carries the same stream, which `docs/steganography.md` explains.
+   * Every channel carries the same stream, which `docs/steganography.md` explains. `mode` is 0 for
+   * `strengthDb` relative to the music's level in the carrier's band, and 1 for how far under the
+   * masking threshold the mark sits.
    */
-  function ssEmbed(audio, frame, key, sampleRate, strengthDb, channels = 1) {
+  function ssEmbed(audio, frame, key, sampleRate, strengthDb, channels = 1, mode = 0) {
     if (!(audio instanceof Float32Array)) {
       throw new TypeError('ssEmbed needs a Float32Array');
     }
@@ -364,7 +366,7 @@ export function createCore(instance) {
       fillSamples(audioBuffer, audio);
       fillBytes(frameBuffer, frame);
       check(
-        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels),
+        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels, mode),
         'core_ss_embed',
       );
       return readBuffer(audioBuffer);
@@ -430,7 +432,7 @@ export function createCore(instance) {
    * `ssEmbed` for an array of channels. Returns an array of new `Float32Array`s, one per channel.
    * Peak memory is the input, the core's copy and the output, with nothing planar in between.
    */
-  function ssEmbedChannels(channelData, frame, key, sampleRate, strengthDb) {
+  function ssEmbedChannels(channelData, frame, key, sampleRate, strengthDb, mode = 0) {
     if (!Array.isArray(channelData) || channelData.length === 0 || !channelData.every((c) => c instanceof Float32Array)) {
       throw new TypeError('ssEmbedChannels needs an array of Float32Arrays');
     }
@@ -448,7 +450,7 @@ export function createCore(instance) {
       fillChannels(audioBuffer, channelData);
       fillBytes(frameBuffer, frame);
       check(
-        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels),
+        e.core_ss_embed(audioBuffer.ptr, frameBuffer.ptr, key.lo, key.hi, sampleRate, strengthDb, channels, mode),
         'core_ss_embed',
       );
       const total = frames * channels;
@@ -484,6 +486,49 @@ export function createCore(instance) {
     } finally {
       destroyBuffer(outBuffer);
       destroyBuffer(audioBuffer);
+    }
+  }
+
+  /**
+   * How far a mark sits under what the music masks, by a simplified masking model, for one channel.
+   *
+   * Returns `null` when there was nothing to judge (digital silence, or two identical files). The
+   * numbers are an objective proxy and not a listening verdict: see `wasm/src/psycho.rs`.
+   *
+   * @returns {{frames: number, cells: number, meanDb: number, p95Db: number, worstFrameDb: number,
+   *   worstFrameAt: number, aboveThreshold: number, aboveMinus6: number} | null}
+   */
+  function nmr(original, marked, sampleRate, maxFrames = 200) {
+    if (!(original instanceof Float32Array) || !(marked instanceof Float32Array)) {
+      throw new TypeError('nmr needs two Float32Arrays');
+    }
+    if (original.length !== marked.length) {
+      throw new RangeError(`the files differ in length: ${original.length} and ${marked.length} samples`);
+    }
+    const a = createBuffer(Math.max(1, original.length));
+    const b = createBuffer(Math.max(1, marked.length));
+    const out = createBuffer(8);
+    try {
+      fillSamples(a, original);
+      fillSamples(b, marked);
+      const code = e.core_nmr(a.ptr, b.ptr, sampleRate, maxFrames, out.ptr);
+      if (code === 1) return null;
+      check(code, 'core_nmr');
+      const v = samples(out, 8);
+      return {
+        frames: v[0],
+        cells: v[1],
+        meanDb: v[2],
+        p95Db: v[3],
+        worstFrameDb: v[4],
+        worstFrameAt: v[5],
+        aboveThreshold: v[6],
+        aboveMinus6: v[7],
+      };
+    } finally {
+      destroyBuffer(out);
+      destroyBuffer(b);
+      destroyBuffer(a);
     }
   }
 
@@ -547,6 +592,7 @@ export function createCore(instance) {
     ssDetect,
     ssEmbedChannels,
     ssDetectChannels,
+    nmr,
     attack,
     destroy,
   };

@@ -23,7 +23,7 @@ import { ATTACK_LIST, ATTACKS, EXTRA_LIST, REMOVAL_LIST, REMOVAL_SPREAD_LIST } f
 import { bitErrors, frame, unframe } from '../src/frame.js';
 import { decodeWavChannels, encodeWavChannels } from '../src/wav.js';
 import * as spread from '../src/spread.js';
-import { DEFAULT_STRENGTH_DB, detectRaw } from '../src/spread.js';
+import { DEFAULT_MASKED_MARGIN_DB, DEFAULT_STRENGTH_DB, detectRaw } from '../src/spread.js';
 import { splitKey } from '../src/watermark.js';
 
 const DEFAULT_KEY = 0x0123_4567_89ab_cdefn;
@@ -86,7 +86,7 @@ export async function main(argv) {
   const args = parseArgs(argv);
   if (!args.in || !args.payload) {
     process.stderr.write(
-      'usage: node bin/attack.js --in track.wav --payload "text" [--scheme lsb|spread] [--strength dB] [--json] [--out marked.wav]\n',
+      'usage: node bin/attack.js --in track.wav --payload "text" [--scheme lsb|spread] [--strength dB] [--level relative|masked] [--json] [--out marked.wav]\n',
     );
     return 2;
   }
@@ -96,7 +96,12 @@ export async function main(argv) {
     process.stderr.write(`unknown scheme "${scheme}": lsb or spread\n`);
     return 2;
   }
-  const strengthDb = args.strength === undefined ? DEFAULT_STRENGTH_DB : Number(args.strength);
+  const level = args.level ?? 'relative';
+  if (level !== 'relative' && level !== 'masked') {
+    process.stderr.write(`unknown level "${level}": relative or masked\n`);
+    return 2;
+  }
+  const strengthDb = args.strength === undefined ? (level === 'masked' ? DEFAULT_MASKED_MARGIN_DB : DEFAULT_STRENGTH_DB) : Number(args.strength);
 
   const wav = decodeWavChannels(new Uint8Array(await readFile(args.in)));
   const audio = wav.channelData;
@@ -126,7 +131,7 @@ export async function main(argv) {
     }
     // Always an array of channels, so every row below treats mono and stereo the same way.
     const marked = scheme === 'spread'
-      ? spread.embed(core, audio, payload, { key, sampleRate: wav.sampleRate, strengthDb })
+      ? spread.embed(core, audio, payload, { key, sampleRate: wav.sampleRate, strengthDb, level })
       : [core.embedLsb(audio[0], framed, { lo, hi })];
 
     if (args.out) {
@@ -262,7 +267,7 @@ export async function main(argv) {
     // that is read without the original can prevent, so that one is stated rather than measured.
     if (scheme === 'spread') {
       const other = (otherKey, otherPayload) =>
-        spread.embed(core, audio, new TextEncoder().encode(otherPayload), { key: otherKey, sampleRate: wav.sampleRate, strengthDb });
+        spread.embed(core, audio, new TextEncoder().encode(otherPayload), { key: otherKey, sampleRate: wav.sampleRate, strengthDb, level });
       const average = (a, b) => a.map((channel, c) => channel.map((v, i) => (v + b[c][i]) / 2));
       add('collusion: average with a copy marked differently (same key)', average(marked, other(key, 'urn:other:copy-2')), 'beyond the brief');
       add('collusion: average with a copy under another key', average(marked, other(key ^ 0xffffn, String(args.payload))), 'beyond the brief');
@@ -275,7 +280,7 @@ export async function main(argv) {
     if (args.json) {
       process.stdout.write(`${JSON.stringify({ key: key.toString(), channels, sampleRate: wav.sampleRate, payloadBytes: payload.length, rows }, null, 2)}\n`);
     } else {
-      printTable(rows, framed.length, bits, wav.sampleRate, channels, scheme, strengthDb);
+      printTable(rows, framed.length, bits, wav.sampleRate, channels, scheme, strengthDb, level);
       process.stdout.write(
         `\n${survived.length}/${ran.length} attacks left the payload readable` +
           ` (control included)\n`,
@@ -288,10 +293,10 @@ export async function main(argv) {
   }
 }
 
-function printTable(rows, frameBytes, bits, sampleRate, channels, scheme, strengthDb) {
+function printTable(rows, frameBytes, bits, sampleRate, channels, scheme, strengthDb, level) {
   const width = Math.max(...rows.map((r) => r.attack.length), 22);
   process.stdout.write(
-    `${scheme === 'spread' ? `Spread spectrum at ${strengthDb} dB` : 'LSB baseline'}: ` +
+    `${scheme === 'spread' ? `Spread spectrum at ${strengthDb} dB ${level === 'masked' ? 'under the masking threshold' : 'relative to the music'}` : 'LSB baseline'}: ` +
       `${frameBytes} byte frame, ${bits} bits, ${sampleRate} Hz ${channels === 1 ? 'mono' : `${channels} channels`}\n\n`,
   );
   process.stdout.write(`${'attack'.padEnd(width)}   BER    recovered  note\n`);

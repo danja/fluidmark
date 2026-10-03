@@ -3,7 +3,7 @@
 //
 // Run the attack harness over every audio file in a directory and say how many survived each attack.
 //
-//   node bin/corpus.js --dir ~/Music/album [--strength -20] [--key 2] [--payload "text"] [--jobs 4] [--out table.md]
+//   node bin/corpus.js --dir ~/Music/album [--strength -20] [--level relative|masked] [--key 2] [--payload "text"] [--jobs 4] [--out table.md]
 //
 // One track tells you about that track. A table over a whole album tells you whether a result is a
 // property of the scheme or of the one file it was measured on, which is what the early figures on
@@ -39,9 +39,9 @@ function parseArgs(argv) {
 }
 
 /** One file through the harness. Resolves to the parsed rows, or an error that names the file. */
-function runOne(file, { payload, key, strength }) {
+function runOne(file, { payload, key, strength, level }) {
   return new Promise((resolveRun) => {
-    const argv = [HARNESS, '--in', file, '--payload', payload, '--scheme', 'spread', '--key', key, '--strength', strength, '--json'];
+    const argv = [HARNESS, '--in', file, '--payload', payload, '--scheme', 'spread', '--key', key, '--strength', strength, '--level', level, '--json'];
     const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
@@ -65,13 +65,14 @@ function runOne(file, { payload, key, strength }) {
 export async function main(argv) {
   const args = parseArgs(argv);
   if (!args.dir) {
-    process.stderr.write('usage: node bin/corpus.js --dir DIR [--strength -20] [--key 2] [--payload "text"] [--jobs 4] [--limit N] [--out table.md]\n');
+    process.stderr.write('usage: node bin/corpus.js --dir DIR [--strength -20] [--level relative|masked] [--key 2] [--payload "text"] [--jobs 4] [--limit N] [--out table.md]\n');
     return 2;
   }
   const options = {
     payload: args.payload ?? 'http://danbri.org/foaf',
     key: String(args.key ?? 2),
-    strength: String(args.strength ?? -20),
+    strength: String(args.strength ?? (args.level === 'masked' ? -6 : -20)),
+    level: String(args.level ?? 'relative'),
   };
   const jobs = Math.max(1, Number(args.jobs ?? 4));
 
@@ -85,7 +86,7 @@ export async function main(argv) {
     process.stderr.write(`no audio files in ${dir}\n`);
     return 2;
   }
-  process.stderr.write(`${files.length} files, ${jobs} at a time, mark at ${options.strength} dB, key ${options.key}\n`);
+  process.stderr.write(`${files.length} files, ${jobs} at a time, mark at ${options.strength} dB (${options.level}), key ${options.key}\n`);
 
   const results = [];
   let next = 0;
@@ -126,7 +127,7 @@ export async function main(argv) {
   }
 
   const lines = [];
-  lines.push(`Corpus: ${ok.length} files from ${dir}, mark at ${options.strength} dB, key ${options.key}.`);
+  lines.push(`Corpus: ${ok.length} files from ${dir}, mark at ${options.strength} dB (${options.level === 'masked' ? 'under the masking threshold' : 'relative to the music'}), key ${options.key}.`);
   if (failed.length) lines.push(`${failed.length} file(s) could not be run: ${failed.map((r) => `${basename(r.file)} (${r.error})`).join('; ')}`);
   lines.push('');
   lines.push('| Attack | Read | Tracks it was lost on |');
