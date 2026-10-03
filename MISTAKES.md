@@ -310,3 +310,43 @@ short answer.
 Prevention: a scheme's first question is how a reader finds where the mark starts, and that is a
 requirement on the scheme rather than a detail of the caller. Asking it while writing the framing
 is cheaper than discovering it after the whole scheme is built.
+
+## A key protects a payload from being read, and nothing from being written
+
+**Asked directly, and the answer turned out to be the more important result of the whole
+watermark work so far.** How would you remove a mark from a FluidMark-marked file?
+
+The measured answer: set the low bit of every sample to zero. It takes no key, needs no knowledge
+of where the mark is, and costs nothing a listener would hear — every sample moves by at most one
+16-bit step, about 0.003% of full scale. The mark is gone. Randomising those low bits instead works
+the same way.
+
+The key is what stops anyone *reading* the payload, which is a confidentiality property. It is not
+an integrity property and never was: an attacker who wants the mark gone does not need to decode
+it, only to destroy the region it lives in. A secret that protects a thing from disclosure and not
+from alteration is not a secret in the sense people assume.
+
+This is now two rows in the harness (`bin/attack.js`, the `REMOVE` rows) and four Rust tests,
+because a scheme whose mark survives a keyless scrub has said something worth knowing and one whose
+mark does not has said something worth recording. It is also the argument for the work still to do:
+redundancy, error correction and interleaving raise the cost of removal from "one pass with a
+scrubber" to "destroy most of the signal's energy in the marked bands", which is damage a listener
+will hear. That is not permanence either, and nothing is. It is the difference between a mark and a
+promise.
+
+Prevention: whenever a key is introduced, ask what it protects against. If the answer is only
+disclosure, say so in the same breath, because "keyed" reads as "protected" and will be assumed to
+mean both.
+
+## A remover that truncated the samples instead of clearing one bit
+
+The first version of `scrub_low_bits` was `(x - sample_fraction(x)).trunc()`, which floors a sample
+rather than clearing its low bit, so it moved samples by up to their own amplitude: 0.4 on the test
+signal. It still removed the mark, which is exactly why it was nearly a silent failure — the test
+that mattered asked whether the mark was gone and the answer was yes.
+
+Caught by the test asserting that removal leaves the audio alone, which is the assertion that says
+what a *removal* attack is supposed to look like as opposed to a *destruction*.
+
+Prevention: an operation's observable side effect is part of its contract. Ask what else it changes,
+and check that too, especially when the operation's whole point is to be quiet.

@@ -17,10 +17,29 @@ export const ATTACKS = {
   RESAMPLE: 7,
   TIME_SHIFT: 8,
   CROP_FRACTION: 9,
+  // Removal rather than degradation: attempts to take the mark out.
+  REMOVE_SCRUB_LOW_BITS: 20,
+  REMOVE_RANDOMISE_LOW_BITS: 21,
 };
 
 /**
- * The list. `param` means something different per row, as `core_attack` documents.
+ * Removal attacks.
+ *
+ * Separate from `ATTACK_LIST` because they answer a different question. Everything in
+ * `ATTACK_LIST` is degradation: processing a marked file and seeing what survives. These are
+ * attempts to take the mark out, and the interesting result is the one where a removal succeeds
+ * and costs nothing a listener would notice.
+ *
+ * Both of these need no key. That is the finding, not a detail: a key protects the payload from
+ * being read, and nothing from being written.
+ */
+export const REMOVAL_LIST = [
+  { id: ATTACKS.REMOVE_SCRUB_LOW_BITS, name: 'REMOVE scrub low bits', param: 0 },
+  { id: ATTACKS.REMOVE_RANDOMISE_LOW_BITS, name: 'REMOVE randomise low bits', param: 0, seed: 9 },
+];
+
+/**
+ * The degradation list. `param` means something different per row, as `core_attack` documents.
  *
  * `external` marks the ones that need a tool this project does not have, so they can be reported
  * as skipped rather than quietly absent. There are none in this table: the lossy rows are added

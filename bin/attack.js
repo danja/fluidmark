@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { loadCore } from '../src/load-node.js';
-import { ATTACK_LIST } from '../src/attacks.js';
+import { ATTACK_LIST, REMOVAL_LIST } from '../src/attacks.js';
 import { bitErrors, frame, unframe } from '../src/frame.js';
 import { decodeWav, encodeWav } from '../src/wav.js';
 import { splitKey } from '../src/watermark.js';
@@ -115,6 +115,13 @@ export async function main(argv) {
     add('none (control)', marked);
     for (const row of ATTACK_LIST) {
       add(row.name, core.attack(row.id, row.param, wav.sampleRate, marked, row.seed ?? 0), row.note ?? '');
+    }
+
+    // Removal, after the degradation rows and labelled as its own thing, because "how do I get
+    // rid of this" and "what does processing do to this" are different questions and a table that
+    // mixed them would answer neither.
+    for (const row of REMOVAL_LIST) {
+      add(row.name, core.attack(row.id, row.param, wav.sampleRate, marked, row.seed ?? 0), 'needs no key');
     }
 
     // The lossy rows need an external binary, so they are reported separately whether or not it

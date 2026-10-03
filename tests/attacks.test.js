@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadCore } from '../src/load-node.js';
-import { ATTACKS, ATTACK_LIST } from '../src/attacks.js';
+import { ATTACKS, ATTACK_LIST, REMOVAL_LIST } from '../src/attacks.js';
 import { bitErrors, frame, unframe } from '../src/frame.js';
 import { splitKey } from '../src/watermark.js';
 
@@ -84,6 +84,16 @@ describe('the harness', () => {
     expect(survivors, `the LSB baseline survived ${survivors.join(', ')}`).toEqual([]);
   });
 
+  it('lists removal attacks separately from degradation', () => {
+    // Mixing them answers neither question, and a scheme could pass the degradation table while
+    // being trivially removable.
+    expect(REMOVAL_LIST.length).toBeGreaterThan(0);
+    const degraded = new Set(ATTACK_LIST.map((r) => r.id));
+    for (const row of REMOVAL_LIST) {
+      expect(degraded.has(row.id), 'a removal attack is also in the degradation list').toBe(false);
+    }
+  });
+
   it('covers the brief: gain, dither, noise, filtering, resampling, time and crop', () => {
     const ids = new Set(ATTACK_LIST.map((r) => r.id));
     for (const required of [
@@ -148,6 +158,24 @@ describe('the individual attacks do what they say', () => {
         if (Math.abs(attacked[i] - marked[i]) > 1e-6) differing += 1;
       }
       expect(differing, `filter ${id} changed nothing`).toBeGreaterThan(marked.length * 0.5);
+    }
+  });
+
+  it('removes the mark without the key, and without touching the audio audibly', () => {
+    // The removal result, as a number rather than a claim. Both of these need no key: they
+    // destroy the only place the mark could be rather than trying to read it.
+    for (const id of [ATTACKS.REMOVE_SCRUB_LOW_BITS, ATTACKS.REMOVE_RANDOMISE_LOW_BITS]) {
+      const attacked = core.attack(id, 0, RATE, marked, 9);
+      const { lo, hi } = splitKey(KEY);
+      const raw = core.extractLsb(attacked, FRAMED.length, { lo, hi });
+      expect(unframe(raw).ok, `attack ${id} left the mark readable`).toBe(false);
+
+      // And it costs nothing a listener would hear: every sample moves by at most one 16-bit step.
+      let worst = 0;
+      for (let i = 0; i < marked.length; i += 1) {
+        worst = Math.max(worst, Math.abs(attacked[i] - marked[i]));
+      }
+      expect(worst, `attack ${id} moved a sample by ${worst}`).toBeLessThanOrEqual(1 / 32768 + 1e-9);
     }
   });
 

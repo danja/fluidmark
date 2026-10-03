@@ -418,6 +418,14 @@ pub const ATTACK_RESAMPLE: u32 = 7;
 pub const ATTACK_TIME_SHIFT: u32 = 8;
 pub const ATTACK_CROP_FRACTION: u32 = 9;
 
+/// Removal attacks. Not degradation: attempts to take the mark out rather than to damage it.
+///
+/// Separate because they answer a different question and the two must not be confused. A mark
+/// that survives transcoding but not a keyless low-bit scrub has not been made permanent; it has
+/// been made hard to copy.
+pub const REMOVE_SCRUB_LOW_BITS: u32 = 20;
+pub const REMOVE_RANDOMISE_LOW_BITS: u32 = 21;
+
 /// Apply one attack to an audio buffer, in place.
 ///
 /// One export rather than ten, because the harness is the only caller and a table of ids in one
@@ -462,6 +470,8 @@ pub unsafe extern "C" fn core_attack(
             let drop = ((input.len() as f64) * param) as usize;
             attack::crop(&input, drop, input.len())
         }
+        REMOVE_SCRUB_LOW_BITS => attack::scrub_low_bits(&input),
+        REMOVE_RANDOMISE_LOW_BITS => attack::randomise_low_bits(&input, seed),
         _ => return CORE_ERR_RANGE,
     };
 

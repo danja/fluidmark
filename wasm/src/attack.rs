@@ -244,6 +244,41 @@ fn next_uniform(state: &mut u64) -> f32 {
     ((x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 40) as f32) / 8_388_608.0
 }
 
+/// Set the low bit of every sample to zero.
+///
+/// The cheapest way to remove a sample-bit mark, and it needs no key: it does not try to read the
+/// mark, it destroys the only place the mark could be. Everything in the file that lived in a low
+/// bit goes, whether or not the reader could have found it.
+///
+/// Kept in the suite because a scheme whose mark survives this has said something worth knowing,
+/// and one whose mark does not has said something worth recording.
+///
+/// Works through `lfs::to_pcm16` rather than any local conversion of its own, because the embedder
+/// and the remover have to agree about where the low bit is. A version of this that truncated the
+/// sample instead moved every sample by up to its own amplitude, which is not removal, it is
+/// destruction, and the difference is worth remembering.
+pub fn scrub_low_bits(samples: &[f32]) -> Vec<f32> {
+    samples
+        .iter()
+        .map(|&x| lfs::from_pcm16(lfs::to_pcm16(x) & !1))
+        .collect()
+}
+
+/// Set the low bit of every sample at random.
+///
+/// The same destruction with less structure, so a reader cannot even tell which samples were
+/// carrying anything.
+pub fn randomise_low_bits(samples: &[f32], seed: u64) -> Vec<f32> {
+    let mut state = seed | 1;
+    samples
+        .iter()
+        .map(|&x| {
+            let bit = (next_uniform(&mut state) >= 0.5) as i32;
+            lfs::from_pcm16((lfs::to_pcm16(x) & !1) | bit)
+        })
+        .collect()
+}
+
 /// What happened to a frame that went through an attack.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -478,4 +513,85 @@ mod tests {
         println!("extracted {} bytes, errors {}", rec.len(), lfs::bit_errors(&f, &rec));
     }
 
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use crate::{frame, lfs};
+
+    const RATE: f64 = 22_050.0;
+    const KEY: u64 = 0x0123_4567_89ab_cdefu64;
+
+    fn audio(len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                let t = i as f64 / RATE;
+                (0.4 * (2.0 * std::f64::consts::PI * 220.0 * t).sin()) as f32
+            })
+            .collect()
+    }
+
+    /// The payload frame, and the samples before and after a mark is scrubbed.
+    fn marked() -> (Vec<u8>, Vec<f32>, Vec<f32>) {
+        let f = frame::encode(b"http://danbri.org/foaf", 0);
+        let samples: Vec<f32> = audio(44100);
+        let marked = lfs::embed(&samples, &f, KEY);
+        (f, marked, samples)
+    }
+
+    #[test]
+    fn zeroing_every_low_bit_removes_the_mark_without_the_key() {
+        let (f, marked, _) = marked();
+        assert!(frame::decode(&lfs::extract(&marked, f.len(), KEY)).is_ok(), "marked to start with");
+
+        let scrubbed = scrub_low_bits(&marked);
+        assert!(
+            frame::decode(&lfs::extract(&scrubbed, f.len(), KEY)).is_err(),
+            "the mark should be gone after scrubbing every low bit, with no key needed",
+        );
+    }
+
+    #[test]
+    fn randomising_every_low_bit_removes_it_too() {
+        let (f, marked, _) = marked();
+        let scrambled = randomise_low_bits(&marked, 99);
+        assert!(frame::decode(&lfs::extract(&scrambled, f.len(), KEY)).is_err());
+    }
+
+    #[test]
+    fn scrubbing_leaves_the_audio_audibly_alone() {
+        // The whole point of this attack: it removes the mark and costs nothing a listener would
+        // notice, which is what makes a key useless against it.
+        let (_, marked, original) = marked();
+        let scrubbed = scrub_low_bits(&marked);
+        let mut worst = 0.0f32;
+        for (a, b) in scrubbed.iter().zip(marked.iter()) {
+            worst = worst.max((a - b).abs());
+        }
+        assert!(worst <= 1.0 / 32768.0, "samples moved by up to {worst}");
+        // And the signal is materially unchanged: correlation with the marked audio is 1.
+        let num: f64 = scrubbed.iter().zip(marked.iter()).map(|(a, b)| (*a as f64) * (*b as f64)).sum();
+        let den: f64 = scrubbed.iter().map(|a| (*a as f64) * (*a as f64)).sum();
+        let corr = (num * num / den).sqrt();
+        assert!(corr > 0.999, "correlation with the marked audio was {corr}");
+        let _ = original;
+    }
+
+    #[test]
+    fn re_embedding_with_a_different_payload_removes_the_old_mark_when_you_have_the_key() {
+        let (f, marked, _) = marked();
+        let other = frame::encode(b"https://example.net/other", 0);
+        let re_embedded = lfs::embed(&marked, &other, KEY);
+        let read = frame::decode(&lfs::extract(&re_embedded, f.len(), KEY));
+        assert_ne!(read.as_ref().map(|fr| fr.payload.clone()), Ok(f[10..].to_vec()));
+    }
+
+    #[test]
+    fn cropping_the_marked_region_away_also_removes_it() {
+        let (f, marked, _) = marked();
+        // Keep only the first fifth, which is where the payload lives.
+        let cropped = crop(&marked, 0, marked.len() / 5);
+        assert!(frame::decode(&lfs::extract(&cropped, f.len(), KEY)).is_err());
+    }
 }

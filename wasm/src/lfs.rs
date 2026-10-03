@@ -99,12 +99,12 @@ pub fn capacity(samples: usize) -> usize {
 /// exact in binary floating point and `to_pcm16(from_pcm16(q))` returns `q` for every `q`. With
 /// 32767 it does not, and a handful of samples land a step out, which is enough to lose a bit and
 /// to make a clean round trip report one error that has nothing to do with the scheme.
-fn to_pcm16(sample: f32) -> i32 {
+pub fn to_pcm16(sample: f32) -> i32 {
     let clamped = sample.clamp(-1.0, 1.0);
     (clamped * 32768.0).round() as i32
 }
 
-fn from_pcm16(value: i32) -> f32 {
+pub fn from_pcm16(value: i32) -> f32 {
     value as f32 / 32768.0
 }
 

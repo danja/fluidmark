@@ -60,6 +60,11 @@ currently cannot, and what is being done in the meantime.
 blockers. Anything that is guidance rather than an action belongs here, and anything an agent can do itself does not belong
 there at all.
 
+**Periodically check the `dim` MCP tools for Farelo tasks relevant to FluidMark**, at the start of a session and now and then
+during a long one (`dim_search`, then `dim_get`). Those tasks live outside this repository, so nothing here will surface them.
+Work any that apply into `TODO.md` or the relevant document. Reading is free; `dim_write` acts as the owner and is real, so do
+not write to DIM unless asked.
+
 ## Non-negotiable rules
 
 - Treat decoded audio as untrusted input. Validate at the boundary, surface errors, and fail gracefully rather than

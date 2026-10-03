@@ -191,3 +191,46 @@ The two rows worth watching are `resample to 48 kHz` and `mp3 64k`. Resampling i
 sample-domain mark dies first and where a frequency-domain one is supposed to live, and lossy
 transcoding is the interference that matters most for music. If a replacement scheme does not beat
 50% on those two, it is not worth building further.
+
+## How you would remove the mark
+
+The obvious question, and it is now measured rather than argued. Two answers, both keyless:
+
+| Removal | BER | Payload readable | |
+|---|---|---|---|
+| `scrub low bits` | 45.3% | no | needs no key |
+| `randomise low bits` | 49.6% | no | needs no key |
+
+Setting the low bit of every sample to zero removes it. So does randomising those bits. Neither
+needs the key, neither needs to know where the mark is, and neither is audible: every sample moves
+by at most one 16-bit step, about 0.003% of full scale, and the correlation with the marked audio
+is above 0.999.
+
+**The key protects the payload from being read. It does not protect the mark from being removed.**
+An attacker who wants a mark gone does not need to decode it, only to destroy the samples it lives
+in. Confidentiality and integrity are different properties and a secret only ever bought the first
+one here.
+
+There is also a third removal, in `docs/initial-thoughts.md`'s terms: cut the marked region out. A
+fourth, which is the strongest known attack against watermarking generally, is **collusion** —
+collect several differently-marked copies of the same track and average or difference them, so the
+common signal cancels and the marks, which differ, do not. None of these need a key either.
+
+### What permanence would actually require
+
+Not one of these is fixable with a better key, and none of them makes a mark permanent. What raises
+the cost:
+
+- **Redundancy.** Spread each payload bit over many samples, so destroying one contributes nothing.
+  Removal then requires destroying most of the signal's energy in the marked region, which is
+  audible damage rather than an inaudible edit.
+- **Error correction and interleaving.** So a targeted scrub destroys symbols rather than the
+  message, which is the difference between an attack that works and one that does not.
+- **A carrier with structure.** Echo, phase, or a transform-domain spread all put the mark somewhere
+  that cannot be randomised away without changing the sound, which is precisely why those families
+  exist and why the survey ranks them above sample-bit schemes.
+- **Collusion resistance.** The hard one, and the reason nobody claims permanence.
+
+The honest statement is that a watermark is not a lock. It raises the cost of removing an
+identifier above the cost of keeping the file, which for most people means forever and for a
+determined adversary means an afternoon.
