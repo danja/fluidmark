@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { readHeader, splitFrames } from '../src/mp3.js';
 
+const FIXTURE = fileURLToPath(new URL('./fixtures/', import.meta.url));
 const AUDIO = fileURLToPath(new URL('../reference/WebBeep/www/audio/', import.meta.url));
 
 function hasFfmpeg() {
@@ -101,8 +102,8 @@ describe('files that are not what they claim', () => {
     expect(splitFrames(Uint8Array.from({ length: 5000 }, (_, i) => (i * 7919) & 0xff)).frames).toEqual([]);
   });
 
-  it.skipIf(!haveAudio)('does not take a stray 0xFF in tag data for a frame', () => {
-    const good = new Uint8Array(readFileSync(`${AUDIO}dfgdfg.mp3`));
+  it('does not take a stray 0xFF in tag data for a frame', () => {
+    const good = new Uint8Array(readFileSync(`${FIXTURE}dfgdfg.mp3`));
     const junk = Uint8Array.from({ length: 300 }, (_, i) => (i % 3 === 0 ? 0xff : 0xe0));
     const joined = new Uint8Array(junk.length + good.length);
     joined.set(junk);
@@ -112,8 +113,8 @@ describe('files that are not what they claim', () => {
     expect(found.frames.length).toBe(splitFrames(good).frames.length);
   });
 
-  it.skipIf(!haveAudio)('skips an ID3v2 tag', () => {
-    const good = new Uint8Array(readFileSync(`${AUDIO}dfgdfg.mp3`));
+  it('skips an ID3v2 tag', () => {
+    const good = new Uint8Array(readFileSync(`${FIXTURE}dfgdfg.mp3`));
     const tag = Uint8Array.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 20, ...new Array(20).fill(0xff)]);
     const joined = new Uint8Array(tag.length + good.length);
     joined.set(tag);

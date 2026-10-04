@@ -186,8 +186,8 @@ deterministic tests that run without a DAW.
 - [x] **A person loads it in REAPER**: done 2026-10-03. It loaded, a bounce read with `bin/mark.js --read`, and part of
       it was listened to with no artifacts noticed. A full listen, with the checks in `docs/how-it-works.md`, is open.
 - [ ] **6. Packaging and CI.** `.github/workflows/ci.yml` and `vst/scripts/package.sh` are written (Linux, macOS universal,
-      Windows by MinGW cross build) and have **never run on GitHub**: the first push is the first test, and a red job is
-      expected to need fixing. The macOS and Windows bundles have not been loaded in a DAW. `docs/vst.md`, "Continuous
+      Windows by MinGW cross build) and build and package on GitHub (macOS universal, Windows DLL, Linux; run of 2026-10-03). The macOS and Windows bundles have
+      not been loaded in a DAW. `docs/vst.md`, "Continuous
       integration", lists the known risks. A release job (tags to a GitHub release) is not written.
 - [ ] **7. The listening check**, which decides the default margin the plugin ships with (`HUMANS.md`).
 - [x] **The mark at 88.2 and 96 kHz**: reads, and sits at the same modelled distance from the threshold (a Rust test and

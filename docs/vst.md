@@ -204,7 +204,16 @@ checks it and zips it as a downloadable artifact with a SHA-256.
 No job is `continue-on-error`; downspout's macOS and Windows jobs are, which would let a broken build show green.
 DPF is cloned at a pinned commit with submodules, and the Rust core is built per target by cmake (`vst/cmake/RustTargets.cmake`).
 
-**Not yet proven, in the order they are likely to bite** (none of this has run anywhere but Linux):
+**What the first runs showed (2026-10-03).** All three plugin jobs build and package. macOS: the core is built for both
+architectures and joined by lipo, CTest passes 3 of 3 on the arm64 slice, both slices are present in the bundle, and the
+zip is signed ad hoc. Windows: a PE32+ x86-64 DLL whose imports are Windows system DLLs only (including
+`bcryptprimitives.dll` and `api-ms-win-core-synch-l1-2-0.dll`, which Rust's standard library pulls in, so Windows 8 or
+later). Cargo prints a harmless jobserver warning under make. The failures were all in the page and test jobs and not
+the plugin: a test reading the gitignored reference, and a script needing Node 22's `WebSocket`
+([MISTAKES.md](../MISTAKES.md)).
+
+**Still not proven, in the order they are likely to bite.** A bundle that builds is not one that loads; nobody has put
+the macOS or Windows one in a host:
 
 1. The Rust `x86_64-pc-windows-gnu` staticlib may need system libraries beyond those listed in `vst/CMakeLists.txt`, which
    will show as undefined symbols at link time.

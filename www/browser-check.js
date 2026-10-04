@@ -311,8 +311,8 @@ async function main() {
       check(await evaluate('!document.getElementById("read-none").hidden && document.getElementById("read-payload").hidden'), 'an unmarked file reports no mark and no identifier');
     }
 
-    // 5. The files the old service made: MPEG-2, 22.05 kHz, mono, read by the tone reader.
-    await setFile('#marked', `${ROOT}reference/WebBeep/www/audio/dfgdfg.mp3`);
+    // 5. The files the old service made (a copy is committed, since the reference is not in a checkout): MPEG-2, 22.05 kHz, mono, read by the tone reader.
+    await setFile('#marked', `${ROOT}tests/fixtures/dfgdfg.mp3`);
     await setValue('read-key', '');
     await evaluate('document.getElementById("read-result").hidden = true');
     await click('read-button');

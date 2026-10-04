@@ -28,9 +28,8 @@ puts the previous image back. `bin/deploy.js` says what it did, and exits non-ze
 
 ## 1. Checks that need a person
 
-- [ ] **Push, and read the first CI run.** `.github/workflows/ci.yml` has never run. Expect the macOS and Windows jobs
-      to need a fix or two (see "Continuous integration" in `docs/vst.md`); paste the failing log and it can be
-      corrected. Then, with a real Mac and a real Windows machine, load the downloaded bundle in a DAW and say whether it
+- [ ] **Load the CI-built macOS and Windows plugins.** CI builds all three bundles (artifacts on the run page, see "Continuous integration"
+      in `docs/vst.md`). With a real Mac and a real Windows machine, load the downloaded bundle in a DAW and say whether it
       loads and marks (`node bin/mark.js --read` on a bounce). On macOS an ad-hoc-signed download is quarantined:
       `xattr -dr com.apple.quarantine FluidMark.vst3`. Real distribution wants an Apple Developer ID and notarisation, and
       a Windows code-signing certificate, which are yours to obtain.
